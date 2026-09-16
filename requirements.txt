@@ -1,0 +1,34 @@
+# DepthWizard - runtime dependencies
+#
+# Install with:
+#     pip install -r requirements.txt
+#
+# NOTE ON GDAL
+# ------------
+# `pip install GDAL` builds from source and needs the GDAL C++ SDK plus a
+# matching compiler. On Windows it fails out of the box. `rasterio` ships
+# prebuilt wheels that bundle their own GDAL, which is all Phase 0 needs, so
+# GDAL is NOT pinned here as a hard requirement.
+#
+# If you need the standalone GDAL Python bindings and CLI (gdalwarp,
+# gdal_translate, ...), install them through conda instead:
+#     conda install -c conda-forge gdal
+# or on Linux via the system package manager, then:
+#     pip install GDAL=="$(gdal-config --version)"
+
+numpy>=1.24
+scipy>=1.10
+scikit-image>=0.21
+opencv-python>=4.8
+rasterio>=1.3
+PyYAML>=6.0
+matplotlib>=3.7
+
+# Deep learning. Phase 0 does not train or run any model, but the dependency is
+# declared up front so the environment is stable across phases. Installing the
+# CUDA build is ~2.5 GB; for a CPU-only environment use:
+#     pip install torch --index-url https://download.pytorch.org/whl/cpu
+torch>=2.1
+
+# Testing
+pytest>=7.4

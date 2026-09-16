@@ -1,0 +1,37 @@
+# --- DepthWizard data directories -------------------------------------------
+# Imagery and derived products are large and/or licensed. Never commit them.
+# The directories themselves are kept via .gitkeep so the tree is reproducible.
+data/raw/*
+!data/raw/.gitkeep
+data/processed/*
+!data/processed/.gitkeep
+data/outputs/*
+!data/outputs/.gitkeep
+
+# --- Python -----------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+
+# --- Tooling ----------------------------------------------------------------
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# --- Editors / OS -----------------------------------------------------------
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# --- Geospatial sidecars generated on the fly -------------------------------
+*.aux.xml
+*.tif.ovr

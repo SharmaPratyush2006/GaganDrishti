@@ -1,0 +1,89 @@
+# DepthWizard - default configuration (Phase 0)
+#
+# Every key here maps onto a dataclass in `depthwizard.config`. Loading is
+# strict: an unknown key or a missing required key raises ConfigError rather
+# than being silently ignored.
+
+project:
+  name: depthwizard
+  # Free-text tag written into GeoTIFF metadata so outputs are traceable.
+  run_id: phase0
+
+paths:
+  raw: data/raw
+  processed: data/processed
+  outputs: data/outputs
+
+logging:
+  # DEBUG | INFO | WARNING | ERROR | CRITICAL
+  level: INFO
+  # "text" for human-readable console output, "json" for machine-parseable logs.
+  format: text
+
+scene:
+  name: synthetic_city_a
+
+  raster:
+    width_px: 512
+    height_px: 512
+    # Ground sample distance in metres. 0.5 m is representative of the
+    # high-resolution optical imagery this project targets.
+    gsd_m: 0.5
+    # Projected CRS in metres, so that GSD and shadow lengths share units.
+    # EPSG:32643 = WGS 84 / UTM zone 43N (covers much of India).
+    crs: EPSG:32643
+    # Map coordinate of the top-left corner of the top-left pixel.
+    origin_easting_m: 700000.0
+    origin_northing_m: 3170000.0
+
+  sun:
+    # Degrees above the horizon.
+    elevation_deg: 45.0
+    # Compass bearing of the sun, degrees clockwise from North.
+    # 0 = N, 90 = E, 180 = S, 270 = W.
+    azimuth_deg: 135.0
+
+  ground:
+    # Scene brightness values are unitless reflectance-like floats in [0, 1].
+    reflectance: 0.35
+    roof_reflectance: 0.65
+    shadow_reflectance: 0.08
+    # Gaussian noise sigma added to the scene. 0.0 keeps the fixture exact and
+    # the tests deterministic.
+    noise_sigma: 0.0
+    noise_seed: 20260916
+
+  # Axis-aligned box buildings.
+  #   x_m     - metres East of the raster's west edge (footprint top-left)
+  #   y_m     - metres South of the raster's north edge (footprint top-left)
+  #   width_m - footprint size along East
+  #   depth_m - footprint size along South
+  #   height_m- the GROUND TRUTH height this fixture is built to recover
+  buildings:
+    - name: tower_a
+      x_m: 40.0
+      y_m: 40.0
+      width_m: 20.0
+      depth_m: 20.0
+      height_m: 30.0
+
+    - name: block_b
+      x_m: 140.0
+      y_m: 60.0
+      width_m: 30.0
+      depth_m: 15.0
+      height_m: 12.0
+
+    - name: slab_c
+      x_m: 60.0
+      y_m: 150.0
+      width_m: 15.0
+      depth_m: 40.0
+      height_m: 45.0
+
+    - name: low_d
+      x_m: 170.0
+      y_m: 170.0
+      width_m: 25.0
+      depth_m: 25.0
+      height_m: 6.0

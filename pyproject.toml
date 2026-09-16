@@ -1,0 +1,50 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "depthwizard"
+version = "0.1.0"
+description = "Building height estimation from monocular satellite imagery using shadow physics (SIH 2026, PS SIH26175)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+
+# Core dependencies needed to run Phase 0 (config, logging, synthetic fixture).
+dependencies = [
+    "numpy>=1.24",
+    "scipy>=1.10",
+    "scikit-image>=0.21",
+    "opencv-python>=4.8",
+    "rasterio>=1.3",
+    "PyYAML>=6.0",
+    "matplotlib>=3.7",
+]
+
+[project.optional-dependencies]
+# Phase 0 declares torch but does not use it. Kept as an extra so that a plain
+# `pip install -e .` stays small; install with `pip install -e ".[ml]"`.
+ml = ["torch>=2.1"]
+
+# Standalone GDAL bindings. See the note in requirements.txt - prefer conda.
+gdal = ["GDAL>=3.6"]
+
+dev = ["pytest>=7.4"]
+
+[project.scripts]
+depthwizard-make-fixture = "depthwizard.ingest.synthetic:main"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+depthwizard = ["py.typed"]
+
+[tool.pytest.ini_options]
+# Lets `pytest` work straight from a clone without `pip install -e .` first.
+pythonpath = ["src"]
+testpaths = ["tests"]
+addopts = "-ra"
