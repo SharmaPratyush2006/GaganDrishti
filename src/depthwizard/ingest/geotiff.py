@@ -30,6 +30,7 @@ __all__ = [
     "MetadataTags",
     "RasterReadResult",
     "pixel_to_map",
+    "translate_transform",
     "transform_from_raster_config",
     "write_single_band",
     "read_raster",
@@ -102,6 +103,22 @@ def pixel_to_map(transform: Affine, col: float, row: float) -> tuple[float, floa
     easting = transform.c + col * transform.a + row * transform.b
     northing = transform.f + col * transform.d + row * transform.e
     return float(easting), float(northing)
+
+
+def translate_transform(transform: Affine, col_off: float, row_off: float) -> Affine:
+    """Shift an affine transform's origin to a pixel offset within the raster.
+
+    Used to give each tile its own georeferencing: a tile starting at
+    ``(row_off, col_off)`` has the same pixel size and rotation as its parent,
+    with the origin moved to that pixel's corner. Written out explicitly rather
+    than as ``transform * Affine.translation(...)``, which is deprecated in
+    recent versions of the ``affine`` package.
+    """
+    easting, northing = pixel_to_map(transform, col_off, row_off)
+    return Affine(
+        transform.a, transform.b, easting,
+        transform.d, transform.e, northing,
+    )
 
 
 def transform_from_raster_config(raster: RasterConfig) -> Affine:

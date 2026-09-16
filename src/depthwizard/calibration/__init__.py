@@ -1,6 +1,6 @@
 """Calibration - NOT IMPLEMENTED in Phase 0.
 
-Planned scope (Phase 2+): turn raw shadow-length measurements into calibrated
+Planned scope (see the README checklist): turn raw shadow-length measurements into calibrated
 height estimates. Correcting for terrain slope, off-nadir view geometry,
 sensor-reported vs. computed sun angles, and per-scene bias.
 

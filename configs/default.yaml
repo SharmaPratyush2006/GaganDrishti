@@ -20,6 +20,23 @@ logging:
   # "text" for human-readable console output, "json" for machine-parseable logs.
   format: text
 
+ingest:
+  radiometry:
+    # Percentile stretch used to normalise any bit depth to 8-bit. Clipping at
+    # 2/98 discards saturated and dead pixels that would otherwise dominate a
+    # min/max stretch.
+    lower_percentile: 2.0
+    upper_percentile: 98.0
+    # true: stretch each band independently (max contrast)
+    # false: one shared window (preserves relative colour between bands)
+    per_band: true
+
+  tiling:
+    tile_size: 512
+    # Shared border between adjacent tiles, so no output pixel sits on a tile
+    # edge where its neighbourhood would be truncated.
+    overlap: 64
+
 scene:
   name: synthetic_city_a
 

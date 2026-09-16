@@ -35,6 +35,9 @@ __all__ = [
     "GroundConfig",
     "BuildingSpec",
     "SceneConfig",
+    "RadiometryConfig",
+    "TilingConfig",
+    "IngestConfig",
     "AppConfig",
     "load_config",
 ]
@@ -280,6 +283,68 @@ class SceneConfig:
 
 
 @dataclass(frozen=True)
+class RadiometryConfig:
+    """Percentile stretch applied when normalising imagery to 8-bit."""
+
+    lower_percentile: float = 2.0
+    upper_percentile: float = 98.0
+    per_band: bool = True
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "lower_percentile", float(self.lower_percentile))
+        object.__setattr__(self, "upper_percentile", float(self.upper_percentile))
+        object.__setattr__(self, "per_band", bool(self.per_band))
+        if not 0.0 <= self.lower_percentile < self.upper_percentile <= 100.0:
+            raise ConfigError(
+                "radiometry needs 0 <= lower_percentile < upper_percentile <= 100, got "
+                f"{self.lower_percentile} and {self.upper_percentile}"
+            )
+
+
+@dataclass(frozen=True)
+class TilingConfig:
+    """Tile geometry. Overlap must be smaller than the tile, or tiles never advance."""
+
+    tile_size: int = 512
+    overlap: int = 64
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "tile_size", int(self.tile_size))
+        object.__setattr__(self, "overlap", int(self.overlap))
+        if self.tile_size <= 0:
+            raise ConfigError(f"tiling.tile_size must be positive, got {self.tile_size}")
+        if self.overlap < 0:
+            raise ConfigError(f"tiling.overlap must be >= 0, got {self.overlap}")
+        if self.overlap >= self.tile_size:
+            raise ConfigError(
+                f"tiling.overlap ({self.overlap}) must be smaller than "
+                f"tiling.tile_size ({self.tile_size})"
+            )
+
+    @property
+    def stride(self) -> int:
+        return self.tile_size - self.overlap
+
+
+@dataclass(frozen=True)
+class IngestConfig:
+    """Phase 1 ingest settings."""
+
+    radiometry: RadiometryConfig = field(default_factory=RadiometryConfig)
+    tiling: TilingConfig = field(default_factory=TilingConfig)
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any], where: str = "ingest") -> "IngestConfig":
+        data = dict(data)
+        _check_keys(cls, data, where)
+        if "radiometry" in data:
+            data["radiometry"] = _build(RadiometryConfig, data["radiometry"], f"{where}.radiometry")
+        if "tiling" in data:
+            data["tiling"] = _build(TilingConfig, data["tiling"], f"{where}.tiling")
+        return cls(**data)
+
+
+@dataclass(frozen=True)
 class AppConfig:
     """Top-level configuration object -- the root of the YAML document."""
 
@@ -287,6 +352,7 @@ class AppConfig:
     project: ProjectConfig = field(default_factory=ProjectConfig)
     paths: PathsConfig = field(default_factory=PathsConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
+    ingest: IngestConfig = field(default_factory=IngestConfig)
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> "AppConfig":
@@ -295,6 +361,8 @@ class AppConfig:
         for key, block in (("project", ProjectConfig), ("paths", PathsConfig), ("logging", LoggingConfig)):
             if key in data:
                 data[key] = _build(block, data[key], key)
+        if "ingest" in data:
+            data["ingest"] = IngestConfig.from_dict(data["ingest"])
         data["scene"] = SceneConfig.from_dict(data["scene"])
         return cls(**data)
 

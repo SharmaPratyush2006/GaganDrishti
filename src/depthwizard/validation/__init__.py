@@ -1,6 +1,6 @@
 """Validation - NOT IMPLEMENTED in Phase 0.
 
-Planned scope (Phase 4+): scoring estimated heights against reference data
+Planned scope (see the README checklist): scoring estimated heights against reference data
 (the synthetic fixture's ground truth first, then real lidar/DSM references)
 and reporting error statistics.
 

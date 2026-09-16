@@ -48,3 +48,9 @@ depthwizard = ["py.typed"]
 pythonpath = ["src"]
 testpaths = ["tests"]
 addopts = "-ra"
+filterwarnings = [
+    "error",
+    # Raised by fixtures that deliberately write ungeoreferenced rasters to
+    # prove DepthWizard refuses to treat them as georeferenced.
+    "ignore::rasterio.errors.NotGeoreferencedWarning",
+]
