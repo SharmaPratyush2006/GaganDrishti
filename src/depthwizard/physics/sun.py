@@ -38,7 +38,9 @@ import math
 __all__ = [
     "shadow_length_m",
     "height_from_shadow_length_m",
+    "shadow_azimuth_deg",
     "shadow_direction_unit",
+    "shadow_direction_pixels",
     "shadow_pixel_offset",
 ]
 
@@ -89,6 +91,38 @@ def height_from_shadow_length_m(shadow_length: float, sun_elevation_deg: float) 
     return length * math.tan(math.radians(elevation))
 
 
+def shadow_azimuth_deg(sun_azimuth_deg: float) -> float:
+    """The anti-sun bearing: the compass direction a shadow runs towards.
+
+    ``shadow_azimuth = (sun_azimuth + 180) % 360``
+
+    Why the anti-sun direction? ``sun_azimuth_deg`` is the bearing *from which*
+    the sunlight arrives -- the direction you look to see the sun. A vertical
+    object blocks that light, so the unlit ground lies on the opposite side of
+    the object, directly away from the sun. A sun in the south-east (135 deg)
+    therefore throws shadows to the north-west (315 deg).
+
+    Getting this backwards is the single easiest way to measure a height of
+    zero on real imagery, which is why it is one named function used everywhere
+    rather than a ``+ 180`` scattered through the codebase.
+
+    Args:
+        sun_azimuth_deg: Compass bearing of the sun, degrees clockwise from
+            North (0 = N, 90 = E, 180 = S, 270 = W). Any real value is accepted
+            and wrapped.
+
+    Returns:
+        The shadow bearing in degrees clockwise from North, wrapped to [0, 360).
+
+    Examples:
+        >>> shadow_azimuth_deg(135.0)
+        315.0
+        >>> shadow_azimuth_deg(315.0)
+        135.0
+    """
+    return (float(sun_azimuth_deg) + 180.0) % 360.0
+
+
 def shadow_direction_unit(sun_azimuth_deg: float) -> tuple[float, float]:
     """Unit vector, in ground coordinates, pointing along the shadow.
 
@@ -97,7 +131,7 @@ def shadow_direction_unit(sun_azimuth_deg: float) -> tuple[float, float]:
 
     Returns:
         ``(east, north)`` components of a unit vector pointing away from the
-        sun, i.e. along bearing ``sun_azimuth_deg + 180``.
+        sun, i.e. along bearing :func:`shadow_azimuth_deg`.
 
     Examples:
         A sun in the East (azimuth 90) casts shadows towards the West::
@@ -106,10 +140,38 @@ def shadow_direction_unit(sun_azimuth_deg: float) -> tuple[float, float]:
             >>> round(e, 6), round(n, 6)
             (-1.0, -0.0)
     """
-    shadow_bearing = math.radians(float(sun_azimuth_deg) + 180.0)
+    shadow_bearing = math.radians(shadow_azimuth_deg(sun_azimuth_deg))
     east = math.sin(shadow_bearing)
     north = math.cos(shadow_bearing)
     return east, north
+
+
+def shadow_direction_pixels(sun_azimuth_deg: float) -> tuple[float, float]:
+    """Unit vector, in raster index space, pointing along the shadow.
+
+    The conversion from map to image coordinates for a north-up raster is the
+    one recorded in this module's header: column index increases towards East,
+    row index increases towards **South**. East therefore maps straight onto
+    ``d_col``, while North maps onto ``-d_row``.
+
+    Args:
+        sun_azimuth_deg: Compass bearing of the sun, degrees clockwise from North.
+
+    Returns:
+        ``(d_row, d_col)`` components of a unit vector, so that stepping
+        ``t`` pixels along the shadow from ``(row, col)`` lands on
+        ``(row + t * d_row, col + t * d_col)``.
+
+    Examples:
+        A sun in the south-east (135) throws shadows to the north-west, which
+        is decreasing row *and* decreasing column::
+
+            >>> d_row, d_col = shadow_direction_pixels(135.0)
+            >>> round(d_row, 6), round(d_col, 6)
+            (-0.707107, -0.707107)
+    """
+    east, north = shadow_direction_unit(sun_azimuth_deg)
+    return -north, east
 
 
 def shadow_pixel_offset(

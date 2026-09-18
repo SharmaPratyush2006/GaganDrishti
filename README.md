@@ -4,11 +4,18 @@
 
 Smart India Hackathon 2026 — problem statement **SIH26175**.
 
-> **Status: Phases 0 and 1 (scaffolding + ingest) only.**
-> There is no model, no shadow detector, no calibration, no DSM/DTM/nDSM and no
-> viewer in this repository yet. See the [checklist](#implemented-vs-planned)
-> for exactly what exists. **No accuracy metrics are reported anywhere in this
-> repository, because none have been measured.**
+> **Status: Phases 0–2 (scaffolding, ingest, shadow physics).**
+> Shadow detection, shadow measurement and height estimation are implemented and
+> tested. There is **no learned model, no calibration, no DSM/DTM/nDSM and no
+> viewer** yet, and **building footprints are supplied inputs — nothing in this
+> repository detects buildings.** See the
+> [checklist](#implemented-vs-planned) for exactly what exists.
+>
+> **No real-world accuracy has been measured, and none is claimed anywhere in
+> this repository.** No reference measurements ship here. The only error figures
+> that exist are against the synthetic fixture, whose heights were *specified*
+> rather than measured, and every one of them is tagged `SYNTHETIC` in the code
+> that produces it.
 
 ---
 
@@ -47,15 +54,32 @@ For a vertical object of height `h` on flat ground, lit by a sun at elevation
 
 - **Forward model** (used to build the synthetic fixture): given a height,
   compute the shadow — `L = h / tan(θ)`.
-- **Inverse model** (what later phases will use on real imagery): given a
-  measured shadow, compute the height — `h = L · tan(θ)`.
+- **Inverse model** (used by Phase 2 on measured shadows): given a measured
+  shadow, compute the height — `h = L · tan(θ)`.
+- **Uncertainty**: `δh = tan(θ) · δL`. Exact rather than a linearisation, since
+  `h` is linear in `L` once `θ` is fixed. It is only reported when the caller
+  supplies a `δL`; no default error bar is invented.
 
 The shadow's **direction** is fixed by the sun's azimuth: a shadow points
 directly away from the sun, along bearing `azimuth + 180°`. A sun in the
 south-east casts shadows to the north-west.
 
-Both relationships live in `src/depthwizard/physics/sun.py` and are the only
-physics implemented so far.
+Geometry lives in `src/depthwizard/physics/sun.py`; the inverse estimator, the
+uncertainty and the solar-elevation gate live in
+`src/depthwizard/physics/height.py`.
+
+### The 25–45° solar elevation band
+
+`h = L · tan(θ)` is just as true at 15° as at 35°, but it is far worse
+conditioned. Below ~25° shadows are long, and more likely to be occluded,
+truncated by a tile edge, or to fall on ground that is not flat. Above ~45°
+shadows are short and `tan(θ)` amplifies every pixel of measurement error into
+more metres of height error.
+
+DepthWizard therefore treats 25–45° as the **recommended** band, and the gate
+is advisory: a scene outside it still gets a height, flagged
+`Confidence.REDUCED` with the reason recorded alongside. **No scene is
+rejected, and no height is silently corrected.**
 
 ### Conventions (fixed project-wide, and recorded in every GeoTIFF we write)
 
@@ -83,6 +107,10 @@ penumbra softening, and shadows confused with dark roofs, water or asphalt.
                  └──────┬───────┘
                         │  pixels + sun geometry
                  ┌──────▼───────┐
+                 │   shadows    │  detect mask, measure L along anti-sun
+                 └──────┬───────┘
+                        │  shadow lengths (+ SUPPLIED footprints)
+                 ┌──────▼───────┐
                  │   physics    │  L = h / tan(θ)  and its inverse
                  └──────┬───────┘
                         │  raw height estimates
@@ -106,8 +134,12 @@ penumbra softening, and shadows confused with dark roofs, water or asphalt.
 Cross-cutting, used by every stage: `config.py` (YAML + dataclasses),
 `logging_setup.py` (structured logging) and `mode.py` (absolute vs relative).
 
-Of the above, **only `ingest` and `physics` have any implementation.**
-`calibration`, `surfaces`, `validation` and `viewer` are empty placeholders
+The `shadows` package sits between `ingest` and `physics`: it turns pixels into
+a shadow mask, measures each **supplied** footprint's shadow along the anti-sun
+direction, and hands the length to `physics` for inversion.
+
+Of the above, `ingest`, `physics`, `shadows` and `validation` have an
+implementation. `calibration`, `surfaces` and `viewer` are empty placeholders
 that exist so import paths stay stable from the first commit.
 
 ### Absolute vs relative mode
@@ -153,10 +185,17 @@ DepthWizard/
 │   │   ├── radiometry.py         # percentile stretch to 8-bit
 │   │   └── tiling.py             # 512x512 tiles, 64 px overlap
 │   ├── physics/
-│   │   └── sun.py                # sun + shadow geometry
+│   │   ├── sun.py                # sun + shadow geometry, anti-sun bearing
+│   │   └── height.py             # h = L*tan(θ), δh, 25-45° band gate
+│   ├── shadows/
+│   │   ├── detector.py           # ShadowDetector ABC + classical HSV detector
+│   │   ├── measure.py            # multi-ray shadow length along the anti-sun
+│   │   └── pipeline.py           # detect -> measure -> invert
+│   ├── validation/
+│   │   ├── evaluation.py         # reference interface, metrics where they exist
+│   │   └── plots.py              # predicted vs reference scatter
 │   ├── calibration/              # NOT IMPLEMENTED
-│   ├── surfaces/                 # NOT IMPLEMENTED
-│   └── validation/               # NOT IMPLEMENTED
+│   └── surfaces/                 # NOT IMPLEMENTED
 ├── tests/
 ├── viewer/                       # NOT IMPLEMENTED
 ├── pyproject.toml
@@ -236,8 +275,24 @@ mixed-up azimuth convention shows up immediately as a mismatch.
 Shadows are rendered by sweeping each footprint from its base to the shadow
 tip, at half-pixel steps. This is the simplest model that is geometrically
 correct for a flat scene — there is no self-shadowing between buildings, no
-penumbra and no atmospheric scattering, and there is deliberately **no shadow
-*detection*** anywhere in this repository.
+penumbra and no atmospheric scattering.
+
+### What the fixture can and cannot resolve
+
+The sweep paints the footprint at whole-pixel translations, and the measurement
+reads back the distance between two pixel centres, so a shadow length is only
+recoverable to the resolution of the grid along its own direction.
+
+That limit depends on the azimuth. Along a cardinal bearing the ray advances one
+whole pixel per step and any whole-pixel length is exact. Along the 45° diagonal
+consecutive pixel centres are √2 px apart **and every ray shares the same
+phase**, so the recoverable lengths are exactly the multiples of √2 and no
+amount of averaging across rays recovers a length between two of them.
+
+The committed fixture is rendered at azimuth 135°, which is that worst case.
+Its residual is therefore not an error in the estimator — see
+[Phase 2 accuracy](#phase-2-accuracy-on-the-synthetic-fixture) for the
+measured decomposition.
 
 ---
 
@@ -333,6 +388,104 @@ rather than padding, so every tile has the same shape. The final row/column
 therefore overlaps by *more* than 64 px, never less, and the valid-span logic
 absorbs that correctly.
 
+## Shadow physics
+
+### The pipeline
+
+```python
+from depthwizard.shadows import (
+    BuildingFootprint, DetectionContext, ShadowHeightPipeline,
+)
+
+context = DetectionContext.from_scene_metadata(scene.metadata)
+
+# Footprints are SUPPLIED. Nothing here detects buildings.
+footprints = [
+    BuildingFootprint.from_bbox(
+        "tower_a", shape=image.shape, row_min=80, row_max=120,
+        col_min=80, col_max=120,
+    )
+]
+
+result = ShadowHeightPipeline().run(image, footprints, context)
+for estimate in result:
+    print(estimate.building_id, estimate.height_m, estimate.confidence)
+```
+
+Three stages, each replaceable on its own:
+
+1. **Detect** — `ClassicalShadowDetector` thresholds the HSV value channel,
+   picking the cut with Otsu unless one is supplied. It reports the threshold it
+   used and the fraction of the scene it marked, and flags a suspicious fraction
+   rather than rejecting the scene.
+2. **Measure** — every *shadow-facing* footprint pixel (the edges whose next
+   step along the anti-sun direction leaves the footprint — picked out by
+   geometry, not hard-coded) launches a ray. Rays tolerate small gaps, skip
+   other buildings, and the per-building length is their **median**, so one ray
+   down a dark alley cannot move the answer.
+3. **Invert** — `h = L · tan(θ)`, with the band gate and any upstream
+   complaints attached as confidence flags.
+
+**Failure is a result, not a fallback.** If too few rays find shadow, the
+measurement returns `ok=False` with a stated reason and `None` for the lengths.
+Nothing substitutes a nominal value or a prior.
+
+### Phase 2 accuracy on the synthetic fixture
+
+> These are **synthetic** figures. The heights were specified when generating
+> the fixture, not measured. They test this implementation's geometry and say
+> **nothing** about real-world accuracy, which has not been measured.
+
+Committed fixture — sun elevation 45°, azimuth 135°, GSD 0.5 m:
+
+| building | L measured (px) | predicted (m) | specified (m) | abs. error (m) |
+| --- | ---: | ---: | ---: | ---: |
+| tower_a | 59.3970 | 29.698485 | 30.0 | 0.301 |
+| block_b | 24.0416 | 12.020815 | 12.0 | 0.021 |
+| slab_c  | 90.5097 | 45.254834 | 45.0 | 0.255 |
+| low_d   | 11.3137 |  5.656854 |  6.0 | 0.343 |
+
+MAE 0.230 m, max 0.343 m — against a grid bound of **0.354 m**
+(`(√2/2) px · 0.5 m/px · tan 45°`).
+
+That residual is the pixel grid, not the estimator. The same scene rendered at
+azimuth 90°, where the geometry is exactly representable, recovers every height
+to machine epsilon:
+
+| building | L measured (px) | predicted (m) | specified (m) | abs. error (m) |
+| --- | ---: | ---: | ---: | ---: |
+| tower_a | 60.0000 | 30.000000 | 30.0 | 3.6 × 10⁻¹⁵ |
+| block_b | 24.0000 | 12.000000 | 12.0 | 1.8 × 10⁻¹⁵ |
+| slab_c  | 90.0000 | 45.000000 | 45.0 | 7.1 × 10⁻¹⁵ |
+| low_d   | 12.0000 |  6.000000 |  6.0 | 8.9 × 10⁻¹⁶ |
+
+Supporting evidence, all asserted in the test suite:
+
+- the classical detector reproduces the fixture's shadow mask **exactly**, zero
+  differing pixels, so segmentation contributes no error here;
+- against analytic masks the measured length at azimuth 135° equals
+  `round(L/√2)·√2` to 1e-14 — the quantization is predicted in closed form, not
+  merely bounded;
+- swept over many azimuths and lengths the mean error is +0.036 px, so the
+  estimator is unbiased rather than systematically short.
+
+## Validation
+
+Validation is the interface through which **externally measured** heights
+arrive, plus the reporting on top of it.
+
+**No reference measurements ship with this repository, and none are generated.**
+A `ReferenceMeasurement` cannot be constructed without a stated `source`, and
+every `ReferenceSet` is tagged `SYNTHETIC` or `MANUAL_REAL` so a fixture number
+can never be reported as a real-world one. A CSV carries no kind, so one must be
+passed explicitly — that difference is exactly the thing that must never be
+guessed.
+
+With no references supplied, `EvaluationReport.metrics()` returns `None`, every
+reference-derived field renders as `"not yet measured"`, and
+`plot_predicted_vs_reference` writes no file and returns `None`. None of them
+fall back to zero or to a default.
+
 ## Configuration
 
 `configs/default.yaml` maps one-to-one onto dataclasses in
@@ -383,16 +536,30 @@ log.info("generated synthetic fixture", extra={"scene": "city_a", "gsd_m": 0.5})
 - [x] Tiling: 512×512, 64 px overlap, tile-to-geographic mapping, stitching metadata
 - [x] Tests against the Phase 0 synthetic GeoTIFF
 
-### Phase 2 — shadow extraction ❌ NOT IMPLEMENTED
+### Phase 2 — shadow physics ✅ IMPLEMENTED
 
-- [ ] Shadow segmentation from imagery
-- [ ] Building footprint association
-- [ ] Shadow length measurement along the solar azimuth
-- [ ] Tile stitching *(Phase 1 records the bookkeeping; nothing stitches yet)*
+- [x] `ShadowDetector` interface, so a learned segmenter can replace the
+      classical one without changing a call site
+- [x] `ClassicalShadowDetector`: HSV value-channel threshold, Otsu by default
+- [x] Shadow length measurement along the anti-sun azimuth, by multi-ray
+      casting with a robust (median) aggregator
+- [x] Association of each measurement with its **supplied** footprint
+- [x] Height estimation `h = L · tan(θ)` and uncertainty `δh = tan(θ) · δL`
+- [x] 25–45° solar-elevation confidence gate (advisory, never a rejection)
+- [x] `ShadowHeightPipeline` tying detect → measure → invert together
+- [x] Reference-data interface and evaluation report, with metrics computed
+      **only** where references exist
+- [x] Predicted-vs-reference scatter plot, drawn only where references exist
+- [x] Test suite covering all of the above
 
-### Phase 3 — height estimation & calibration ❌ NOT IMPLEMENTED
+Not in Phase 2, and deliberately absent:
 
-- [ ] Height estimation from measured shadows
+- **Building detection.** Footprints are supplied by the caller — drawn by
+  hand, taken from a cadastral layer, or read from the fixture's ground truth.
+- **Tile stitching.** Phase 1 records the bookkeeping; nothing stitches yet.
+
+### Phase 3 — calibration ❌ NOT IMPLEMENTED
+
 - [ ] Terrain slope and off-nadir view corrections
 - [ ] Per-scene bias calibration
 - [ ] Learned refinement model *(no model is built yet)*
@@ -404,11 +571,15 @@ log.info("generated synthetic fixture", extra={"scene": "city_a", "gsd_m": 0.5})
 - [ ] nDSM (normalised height surface)
 - [ ] External elevation sources (SRTM / CartoDEM)
 
-### Phase 5 — validation ❌ NOT IMPLEMENTED
+### Phase 5 — validation 🟡 INTERFACE IMPLEMENTED, NO REAL DATA
 
-- [ ] Scoring against the synthetic fixture's ground truth
-- [ ] Scoring against real reference DSM / lidar
-- [ ] Error reporting *(no metrics are claimed until they are measured)*
+- [x] Reference-data interface (`ReferenceSet`, JSON/CSV loading), requiring a
+      stated source on every measurement
+- [x] Scoring against the synthetic fixture's specified heights, tagged
+      `SYNTHETIC` wherever it is reported
+- [x] Error reporting and scatter plot, both absent where references are
+- [ ] Scoring against real reference DSM / lidar *(**no real reference data has
+      been supplied to this repository**, so no real-world accuracy exists)*
 
 ### Phase 6 — viewer ❌ NOT IMPLEMENTED
 
@@ -421,7 +592,8 @@ log.info("generated synthetic fixture", extra={"scene": "city_a", "gsd_m": 0.5})
 
 `pip install GDAL` compiles from source and needs the GDAL C++ SDK plus a
 matching compiler; on Windows it fails out of the box. `rasterio` ships
-prebuilt wheels that bundle their own GDAL, which is everything Phase 0 needs,
+prebuilt wheels that bundle their own GDAL, which is everything implemented
+so far needs,
 so GDAL is **not** a hard requirement here. If you need the standalone bindings
 and CLI tools, install them via conda:
 
@@ -430,7 +602,7 @@ conda install -c conda-forge gdal
 ```
 
 `torch` is declared as the `ml` extra rather than a core dependency, since
-Phase 0 neither trains nor runs any model and the CUDA build is ~2.5 GB:
+nothing here trains or runs a model and the CUDA build is ~2.5 GB:
 
 ```bash
 pip install -e ".[ml]"

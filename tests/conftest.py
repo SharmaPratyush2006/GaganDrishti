@@ -226,3 +226,93 @@ def geographic_tif(
         transform=transform,
         tags={"SUN_ELEVATION": "50.0", "SUN_AZIMUTH": "120.0"},
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 helpers: analytic shadow masks
+# ---------------------------------------------------------------------------
+#
+# The synthetic GeoTIFF is rendered at sun azimuth 135 deg, which is the worst
+# case for a square pixel grid: the shadow runs exactly along the diagonal, so
+# consecutive pixel centres along every ray are sqrt(2) px apart *and every ray
+# shares the same phase*. The representable shadow lengths are therefore the
+# multiples of sqrt(2), and no amount of averaging over rays recovers a length
+# that falls between two of them.
+#
+# To test the measurement geometry itself, rather than that quantization, these
+# helpers build a shadow mask analytically from a known length, at an azimuth
+# the caller chooses. At an axis-aligned azimuth the ray step is exactly 1 px
+# and the geometry is exactly representable, so recovery is exact.
+
+
+def shadow_ray_step_px(sun_azimuth_deg: float) -> float:
+    """Spacing between consecutive pixel centres along the shadow ray.
+
+    1.0 for an axis-aligned shadow, sqrt(2) for a 45 degree diagonal. This is
+    the grid's resolution limit for a single ray, and therefore the scale of
+    the only error an exact measurement can still make.
+    """
+    from depthwizard.physics.sun import shadow_direction_pixels
+
+    d_row, d_col = shadow_direction_pixels(sun_azimuth_deg)
+    return 1.0 / max(abs(d_row), abs(d_col))
+
+
+def build_analytic_shadow_mask(
+    shape: tuple[int, int],
+    *,
+    row_min: int,
+    row_max: int,
+    col_min: int,
+    col_max: int,
+    sun_azimuth_deg: float,
+    shadow_length_px: float,
+) -> np.ndarray:
+    """A shadow mask built analytically from a rectangular footprint.
+
+    The shadow of a flat-roofed box is its footprint swept from the base to the
+    tip, so a pixel centre ``p`` is shadow exactly when ``p - t * direction``
+    lies inside the footprint for some ``t`` in ``[0, shadow_length_px]``. The
+    footprint itself is cleared: a roof is not its own shadow.
+
+    That condition is solved in closed form rather than by sampling ``t``. For
+    each axis the constraint is an interval in ``t``; the pixel is shadow when
+    the row interval, the column interval and ``[0, L]`` share a point. So the
+    mask has no sweep-resolution error of its own, and the only quantization
+    left is the pixel grid -- which is the thing under test.
+    """
+    from depthwizard.physics.sun import shadow_direction_pixels
+
+    d_row, d_col = shadow_direction_pixels(sun_azimuth_deg)
+    length = float(shadow_length_px)
+    rows = np.arange(shape[0], dtype=np.float64)[:, None]
+    cols = np.arange(shape[1], dtype=np.float64)[None, :]
+
+    # Feasible t interval, intersected axis by axis, starting from [0, L].
+    low = np.zeros(shape, dtype=np.float64)
+    high = np.full(shape, length, dtype=np.float64)
+
+    for coordinate, delta, lower, upper in (
+        (rows, d_row, row_min - 0.5, row_max - 0.5),
+        (cols, d_col, col_min - 0.5, col_max - 0.5),
+    ):
+        if abs(delta) < 1e-15:
+            # No travel along this axis: the pixel must already be in range.
+            inside = (coordinate >= lower) & (coordinate <= upper)
+            high = np.where(inside, high, -np.inf)
+            continue
+        # lower <= coordinate - t * delta <= upper, solved for t.
+        bound_a = (coordinate - upper) / delta
+        bound_b = (coordinate - lower) / delta
+        low = np.maximum(low, np.minimum(bound_a, bound_b))
+        high = np.minimum(high, np.maximum(bound_a, bound_b))
+
+    mask = np.broadcast_to(low <= high, shape).copy()
+    mask[row_min:row_max, col_min:col_max] = False
+    return mask
+
+
+@pytest.fixture
+def analytic_shadow_mask():
+    """Factory fixture wrapping :func:`build_analytic_shadow_mask`."""
+    return build_analytic_shadow_mask
