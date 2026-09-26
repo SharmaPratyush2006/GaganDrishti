@@ -7,6 +7,12 @@ data/processed/*
 !data/processed/.gitkeep
 data/outputs/*
 !data/outputs/.gitkeep
+# Local DFC2019 download (~16 GB, licensed). Never commit.
+DepthWizardData/
+
+# --- Machine-specific configs -------------------------------------------------
+# e.g. configs/phase3.local.yaml, which points at a local dataset path.
+configs/*.local.yaml
 
 # --- Python -----------------------------------------------------------------
 __pycache__/

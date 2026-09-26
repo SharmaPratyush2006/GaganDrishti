@@ -1,0 +1,208 @@
+# DepthWizard - Phase 3: the learned relative-height baseline
+#
+# This is a TEMPLATE, not a description of any dataset that exists here.
+# DepthWizard ships no DFC2019 data, downloads none and simulates none.
+#
+# This file is shared and machine-independent: it never names a path on any
+# particular machine. To use it:
+#   1. download the IEEE GRSS DFC2019 Track 1 archive yourself, and
+#   2. create configs/phase3.local.yaml (git-ignored) containing only
+#
+#        extends: phase3.yaml
+#        dataset:
+#          root: <absolute path to the folder holding Training-RGB/ and Training-Truth/>
+#
+#      then pass `--config configs/phase3.local.yaml`. Keys in the local file
+#      are deep-merged over this one; everything else is inherited.
+#
+# Run against this template directly and `discover_pairs` raises DatasetError
+# naming the missing path. That is the intended behaviour - it does not fall
+# back to synthetic data.
+#
+# Loading is strict, exactly as in configs/default.yaml: an unknown key or a
+# missing required key raises ConfigError rather than being quietly ignored.
+
+run_id: phase3
+output_dir: data/outputs/phase3
+
+dataset:
+  # REQUIRED. A placeholder under the git-ignored data/raw/ that does not
+  # exist in a fresh clone; override it in configs/phase3.local.yaml.
+  root: data/raw/dfc2019
+
+  # ---- layout -------------------------------------------------------------
+  # Verified against a real DFC2019 Track 1 training download:
+  #   Training-RGB/Track1-RGB/JAX_004_006_RGB.tif      1024x1024, 3-band uint8
+  #   Training-Truth/Track1-Truth/JAX_004_006_AGL.tif  1024x1024, 1-band float32
+  # (Track1-Truth also holds *_CLS.tif, which is ignored. Validation/Track1 has
+  # no truth and is not used for training.)
+  image_subdir: Training-RGB/Track1-RGB
+  height_subdir: Training-Truth/Track1-Truth
+  image_suffix: _RGB.tif
+  height_suffix: _AGL.tif
+
+  # Recovers the scene id used for the spatial split from a filename stem.
+  # Must contain a named group `(?P<scene>...)`; per_city_scene also needs
+  # `(?P<city>...)`. JAX_004_007 -> scene JAX_004 (the geographic tile), city
+  # JAX. The trailing _007 is the view; all views of a tile share a side.
+  scene_id_regex: '^(?P<scene>(?P<city>[A-Za-z]+)_\d+)'
+
+  # ---- nodata -------------------------------------------------------------
+  # The real DFC2019 Track 1 rasters have CRS=None, an identity transform and
+  # NO nodata tag, and the AGL files use NO sentinel value: their rare invalid
+  # pixels are non-finite, and non-finite pixels are always masked. This value
+  # is only an extra guard for other packagings and matches no real AGL
+  # height. Finite negative AGL values (e.g. -0.277 m, -3.1 m) are real
+  # measurements and stay valid; there is deliberately no lower bound.
+  # Invalid pixels are masked out of the loss and NEVER imputed.
+  height_nodata: -9999.0
+  # Heights above this are treated as invalid rather than clipped, so a
+  # sentinel that slipped past height_nodata cannot dominate the loss.
+  height_valid_max: 1000.0
+
+  # ---- tiling -------------------------------------------------------------
+  # tile_size must equal training.image_size; the config refuses otherwise.
+  tile_size: 256
+  train_tiles_per_scene: 8
+  max_crop_attempts: 8
+  min_valid_fraction: 0.25
+
+  # "error" refuses a RGB/height size mismatch. "resample_height_to_image"
+  # accepts ONE explicit, logged, nearest-neighbour resample of the HEIGHT
+  # raster onto the image grid. The image is never resampled on its own.
+  # Pairs with no CRS (all of DFC2019) must match size and transform exactly
+  # and are never resampled, whatever this says.
+  on_size_mismatch: error
+
+  # Scenes smaller than tile_size are zero-padded, and the padding is marked
+  # invalid. false refuses them instead.
+  allow_padding: true
+
+  # ImageNet statistics, matching the pretrained encoders' own training.
+  normalize_mean: [0.485, 0.456, 0.406]
+  normalize_std: [0.229, 0.224, 0.225]
+
+  seed: 20260918
+
+  split:
+    # per_city_scene | scene_prefix | explicit | random_scene | random_tile
+    #
+    # per_city_scene (the default here) holds out ~val_fraction of the tile ids
+    # of EACH city, chosen deterministically from `seed`. Every view of a
+    # held-out tile goes with it, and both JAX and OMA feed train and
+    # validation. It is tile-disjoint, not city-disjoint: it measures
+    # generalisation to unseen tiles of the trained cities.
+    #
+    # scene_prefix / explicit hold out whole named areas. (Holding out all of
+    # OMA was the previous default; on the real data that put 1,768 of 2,783
+    # pairs in validation and trained on one city only.)
+    #
+    # The two random modes are NOT spatially separated: random_tile in
+    # particular can put a validation tile immediately beside a training tile
+    # sharing the same buildings, so a score from it measures interpolation,
+    # not generalisation. The trainer warns loudly when the split is not
+    # separated.
+    mode: per_city_scene
+
+    # Used by per_city_scene (per city) and the two random modes.
+    val_fraction: 0.2
+    # Used by mode: scene_prefix.
+    val_scene_prefixes: []
+    # Used by mode: explicit.
+    val_scene_ids: []
+    seed: 20260918
+
+model:
+  # dinov2_small (preferred) | convnext_tiny (documented fallback backbone)
+  encoder: dinov2_small
+
+  # Fetch the published pretrained checkpoint via timm.
+  pretrained: true
+  # null -> download by the encoder's canonical name.
+  # A path -> load that local state dict instead, for offline machines.
+  weights: null
+  # Explicit opt-in to an UNTRAINED encoder. Only tests and offline experiments
+  # set this. A random encoder is never reported as a pretrained one.
+  allow_random_init: false
+
+  # Must be true in Phase 3. The frozen encoder is what makes the baseline fit
+  # 6 GB of VRAM and stay stable; unfreezing it is a later experiment.
+  freeze_encoder: true
+
+  decoder_channels: 64
+  head_channels: 32
+  # Encoder blocks tapped for the DPT pyramid (ViT encoders only).
+  vit_intermediate_layers: [2, 5, 8, 11]
+
+loss:
+  # 0 -> plain log-space MSE (scale sensitive)
+  # 1 -> fully scale invariant
+  # 0.5 -> the usual compromise, and this project's default
+  lambda_si: 0.5
+  # Added before the logarithm so log(0) cannot occur and a flat-ground pixel
+  # (height exactly 0) stays a usable training signal.
+  epsilon: 1.0
+  # true -> the head's output IS log-height, so no log is taken of the
+  # prediction. See the loss module docstring for why this is the safe default.
+  predict_log: true
+  # Samples with fewer valid target pixels than this contribute nothing.
+  min_valid_pixels: 32
+
+training:
+  # Must equal dataset.tile_size.
+  image_size: 256
+
+  # batch_size x gradient_accumulation_steps = 16 samples per optimiser step,
+  # at 8 per forward pass so the activations fit a 6 GB card.
+  batch_size: 8
+  gradient_accumulation_steps: 2
+
+  epochs: 10
+  learning_rate: 0.0001
+  weight_decay: 0.01
+  grad_clip_norm: 1.0
+
+  num_workers: 4
+  pin_memory: true
+  persistent_workers: true
+
+  # bf16 | fp16 | fp32. bf16 needs an Ampere-or-newer NVIDIA GPU.
+  precision: bf16
+  # false -> refuse if the requested precision is unsupported.
+  # true  -> fall back to fp32 AND record the substitution in the report, the
+  #          logs and every checkpoint.
+  allow_precision_fallback: false
+
+  # auto | cuda | cpu. "cuda" with no CUDA available is an error, not a silent
+  # downgrade to a run that would take 40x longer.
+  device: auto
+
+  seed: 20260918
+  log_every: 10
+  # null -> run the whole epoch. An integer caps optimiser steps per epoch.
+  max_steps_per_epoch: null
+  # Validation crops scored per epoch: a fixed subset of the full validation
+  # grid, drawn once from dataset.seed, identical every epoch. The full grid
+  # on the real split is 615 pairs x 16 = 9,840 crops; 512 keeps an RTX 4050
+  # validation pass short. null -> the full grid (use for a final run).
+  max_val_crops: 512
+  use_scheduler: true
+
+inference:
+  # Training tiles are 256 px; inference runs genuinely at 512 px. The decoder
+  # and head are fully convolutional and the encoder input scales with the tile
+  # (DINOv2: 512 -> 504 = 36 patches), so this is a real 512 px forward pass at
+  # the same ground sample distance, not a 256 px prediction upsampled.
+  # null -> use training.image_size. Must be a multiple of 32.
+  tile_size: 512
+
+checkpoint:
+  dir: data/outputs/phase3/checkpoints
+  every_epoch: true
+  keep_best: true
+  # false -> omit the frozen encoder from the checkpoint. It never changes, and
+  # the checkpoint records its name and weight source, so the full model is
+  # reconstructible from the trainable state plus this config.
+  include_encoder: false
+  # null -> start from scratch. A path -> resume from that checkpoint.
+  resume: null

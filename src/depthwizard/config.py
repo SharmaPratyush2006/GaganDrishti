@@ -40,6 +40,8 @@ __all__ = [
     "IngestConfig",
     "AppConfig",
     "load_config",
+    "check_keys",
+    "build_dataclass",
 ]
 
 DEFAULT_CONFIG_PATH = Path("configs/default.yaml")
@@ -383,3 +385,11 @@ class AppConfig:
 def load_config(path: str | Path = DEFAULT_CONFIG_PATH) -> AppConfig:
     """Load and validate a DepthWizard config file."""
     return AppConfig.from_yaml(path)
+
+
+# Public aliases for the strict loader helpers above. Phase 3 keeps its own
+# config root in `depthwizard.relative.config` (it configures training, not a
+# scene) but must load it with exactly the same strictness, so it reuses these
+# rather than growing a second, looser parser.
+check_keys = _check_keys
+build_dataclass = _build

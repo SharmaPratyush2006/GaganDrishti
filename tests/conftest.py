@@ -8,8 +8,11 @@ discovery is exercised on more than the one format DepthWizard itself writes.
 
 from __future__ import annotations
 
+import logging
+from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
+from typing import Iterator, Sequence
 
 import cv2
 import numpy as np
@@ -316,3 +319,186 @@ def build_analytic_shadow_mask(
 def analytic_shadow_mask():
     """Factory fixture wrapping :func:`build_analytic_shadow_mask`."""
     return build_analytic_shadow_mask
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 helpers: a DFC2019-SHAPED directory of synthetic rasters
+# ---------------------------------------------------------------------------
+#
+# These fixtures do NOT contain DFC2019 data, and nothing here is a stand-in for
+# it. They are small synthetic raster pairs that merely follow the same *layout*
+# (an RGB sub-directory, a height sub-directory, a shared filename stem, a
+# large-negative nodata sentinel) so that pair discovery, spatial splitting,
+# crop geometry and masking can be tested without any download.
+#
+# Their pixel values are arbitrary. No accuracy figure may be derived from them,
+# and none is anywhere in the test suite: the Phase 3 tests assert on shapes,
+# masks, determinism and invariants, never on how well a model predicts.
+#
+# The sub-directories follow the verified real layout (nested Training-*/Track1-*).
+# By default the rasters are georeferenced with a -9999 nodata tag, which the
+# real release is NOT; pass georeferenced=False for the real release's header
+# shape (CRS None, identity transform, no nodata tag, NaN for invalid pixels).
+
+DFC_IMAGE_SUBDIR = "Training-RGB/Track1-RGB"
+DFC_HEIGHT_SUBDIR = "Training-Truth/Track1-Truth"
+DFC_IMAGE_SUFFIX = "_RGB.tif"
+DFC_HEIGHT_SUFFIX = "_AGL.tif"
+DFC_NODATA = -9999.0
+
+
+def write_synthetic_pair(
+    root: Path,
+    stem: str,
+    *,
+    size: int = 96,
+    height_size: int | None = None,
+    nodata_rows: int = 0,
+    fill_height: float | None = None,
+    georeferenced: bool = True,
+    nan_pixels: Sequence[tuple[int, int]] = (),
+) -> tuple[Path, Path]:
+    """Write one synthetic ``(RGB, AGL)`` pair under a DFC2019-shaped layout.
+
+    Args:
+        root: directory that will hold the two sub-directories.
+        stem: shared filename stem, e.g. ``JAX_004_007``.
+        size: edge length of the RGB raster.
+        height_size: edge length of the height raster. Defaults to ``size``;
+            set it differently to exercise the size-mismatch policy.
+        nodata_rows: how many leading rows of the height raster to fill with the
+            invalid marker (the -9999 sentinel when georeferenced, NaN when
+            not), so masking has something real to exclude.
+        fill_height: when given, every valid height pixel takes this value
+            (useful for tests that need a known constant); otherwise a smooth
+            ramp is written so that crops differ from one another.
+        georeferenced: False writes both rasters the way the real DFC2019
+            Track-1 release is: no CRS, identity transform, no nodata tag.
+        nan_pixels: ``(row, col)`` height pixels to set to NaN.
+
+    Returns:
+        ``(image_path, height_path)``.
+    """
+    import rasterio
+    from rasterio.transform import Affine
+
+    height_size = size if height_size is None else height_size
+    image_dir = root / DFC_IMAGE_SUBDIR
+    height_dir = root / DFC_HEIGHT_SUBDIR
+    image_dir.mkdir(parents=True, exist_ok=True)
+    height_dir.mkdir(parents=True, exist_ok=True)
+
+    import zlib
+
+    # crc32, not hash(): str hashing is randomised per process, which would make
+    # the synthetic pixels differ between runs and failures unreproducible.
+    rng = np.random.default_rng(zlib.crc32(stem.encode("utf-8")))
+    rgb = rng.integers(0, 256, size=(3, size, size), dtype=np.uint8)
+
+    if fill_height is None:
+        ramp = np.linspace(0.0, 40.0, height_size, dtype=np.float32)
+        agl = np.broadcast_to(ramp[:, None], (height_size, height_size)).copy()
+    else:
+        agl = np.full((height_size, height_size), float(fill_height), dtype=np.float32)
+    if nodata_rows:
+        agl[:nodata_rows, :] = DFC_NODATA if georeferenced else np.nan
+    for row, col in nan_pixels:
+        agl[row, col] = np.nan
+
+    image_path = image_dir / f"{stem}{DFC_IMAGE_SUFFIX}"
+    height_path = height_dir / f"{stem}{DFC_HEIGHT_SUFFIX}"
+
+    if georeferenced:
+        crs = "EPSG:32643"
+        transform = Affine(0.5, 0.0, 700000.0, 0.0, -0.5, 3170000.0)
+        # Built directly rather than as `transform * Affine.scale(...)`: the
+        # affine package raises PendingDeprecationWarning on `*`, and this
+        # suite runs with filterwarnings = error.
+        scale = size / height_size
+        height_transform = Affine(
+            0.5 * scale, 0.0, 700000.0, 0.0, -0.5 * scale, 3170000.0
+        )
+        nodata = DFC_NODATA
+    else:
+        crs = None
+        transform = height_transform = Affine.identity()
+        nodata = None
+
+    with rasterio.open(
+        image_path, "w", driver="GTiff", height=size, width=size, count=3,
+        dtype="uint8", crs=crs, transform=transform,
+    ) as dst:
+        dst.write(rgb)
+
+    with rasterio.open(
+        height_path, "w", driver="GTiff", height=height_size, width=height_size,
+        count=1, dtype="float32", crs=crs, transform=height_transform,
+        nodata=nodata,
+    ) as dst:
+        dst.write(agl, 1)
+
+    return image_path, height_path
+
+
+@contextmanager
+def captured_depthwizard_logs(level: int = logging.DEBUG) -> Iterator[list[logging.LogRecord]]:
+    """Collect records from the ``depthwizard`` logger tree.
+
+    A handler is attached to that logger directly because it may be configured
+    with ``propagate = False``, which keeps its records away from ``caplog``.
+    """
+    records: list[logging.LogRecord] = []
+
+    class _ListHandler(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            records.append(record)
+
+    logger = logging.getLogger("depthwizard")
+    handler = _ListHandler(level)
+    previous_level = logger.level
+    logger.addHandler(handler)
+    logger.setLevel(min(level, previous_level or level))
+    try:
+        yield records
+    finally:
+        logger.removeHandler(handler)
+        logger.setLevel(previous_level)
+
+
+@pytest.fixture
+def synthetic_pair_writer():
+    """Factory fixture wrapping :func:`write_synthetic_pair`."""
+    return write_synthetic_pair
+
+
+@pytest.fixture
+def dfc_like_root(tmp_path: Path) -> Path:
+    """A DFC2019-SHAPED tree of synthetic rasters: two cities, four tiles.
+
+    Layout::
+
+        <root>/Training-RGB/Track1-RGB/JAX_004_001_RGB.tif     (+ _002)
+        <root>/Training-RGB/Track1-RGB/OMA_012_001_RGB.tif     (+ _002)
+        <root>/Training-Truth/Track1-Truth/JAX_004_001_AGL.tif (+ ...)
+
+    Two scene ids (``JAX_004``, ``OMA_012``) so that a prefix split has
+    something to separate. Again: synthetic pixels, not DFC2019.
+    """
+    root = tmp_path / "dfc_like"
+    for stem in ("JAX_004_001", "JAX_004_002", "OMA_012_001", "OMA_012_002"):
+        write_synthetic_pair(root, stem, size=96, nodata_rows=8)
+    return root
+
+
+@pytest.fixture
+def dataset_config(dfc_like_root: Path):
+    """A :class:`DatasetConfig` pointed at :func:`dfc_like_root`, tile 32."""
+    from depthwizard.relative.config import DatasetConfig, SplitConfig
+
+    return DatasetConfig(
+        root=dfc_like_root,
+        tile_size=32,
+        train_tiles_per_scene=2,
+        min_valid_fraction=0.1,
+        split=SplitConfig(mode="scene_prefix", val_scene_prefixes=("OMA",)),
+    )

@@ -22,9 +22,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Phase 0 declares torch but does not use it. Kept as an extra so that a plain
-# `pip install -e .` stays small; install with `pip install -e ".[ml]"`.
-ml = ["torch>=2.1"]
+# Phase 3 (the relative-height baseline) needs torch and timm; transformers
+# provides its pretrained fallback (Depth Anything V2-Small). Kept as an extra
+# so that a plain `pip install -e .` stays small; install with
+# `pip install -e ".[ml]"`. For the GPU, install the CUDA build of torch first
+# from the PyTorch index (e.g. cu124) so pip does not pull a CPU wheel.
+ml = ["torch>=2.1", "timm>=0.9.16", "transformers>=4.45"]
 
 # Standalone GDAL bindings. See the note in requirements.txt - prefer conda.
 gdal = ["GDAL>=3.6"]
@@ -48,9 +51,18 @@ depthwizard = ["py.typed"]
 pythonpath = ["src"]
 testpaths = ["tests"]
 addopts = "-ra"
+markers = [
+    "slow: builds a full pretrained-architecture backbone; deselect with -m 'not slow'",
+    "real_data: reads the local DFC2019 download; opt-in via DEPTHWIZARD_REAL_DATA=1",
+]
 filterwarnings = [
     "error",
     # Raised by fixtures that deliberately write ungeoreferenced rasters to
     # prove DepthWizard refuses to treat them as georeferenced.
     "ignore::rasterio.errors.NotGeoreferencedWarning",
+    # rasterio 1.4.x calls affine's deprecated `*` operator from inside its own
+    # windows.transform() during a boundless read, which Phase 3's paired tile
+    # reader relies on. Third-party call path, not ours; scoped to that one
+    # message so any other pending deprecation still fails the suite.
+    "ignore:Use `@` matmul instead of:PendingDeprecationWarning",
 ]

@@ -4,10 +4,13 @@
 
 Smart India Hackathon 2026 — problem statement **SIH26175**.
 
-> **Status: Phases 0–2 (scaffolding, ingest, shadow physics).**
-> Shadow detection, shadow measurement and height estimation are implemented and
-> tested. There is **no learned model, no calibration, no DSM/DTM/nDSM and no
-> viewer** yet, and **building footprints are supplied inputs — nothing in this
+> **Status: Phases 0–2 complete; Phase 3 (relative-height baseline) trained on
+> real DFC2019 data.** Shadow detection, shadow measurement and height
+> estimation are implemented and tested. The Phase 3 model has been trained on
+> the GPU and checked on held-out tiles, but its output is **relative and
+> unitless — not metres** — and it has **no accuracy figure**. There is **no
+> calibration, no DSM/DTM/nDSM and no viewer** yet, and **building footprints
+> are supplied inputs — nothing in this
 > repository detects buildings.** See the
 > [checklist](#implemented-vs-planned) for exactly what exists.
 >
@@ -558,14 +561,106 @@ Not in Phase 2, and deliberately absent:
   hand, taken from a cadastral layer, or read from the fixture's ground truth.
 - **Tile stitching.** Phase 1 records the bookkeeping; nothing stitches yet.
 
-### Phase 3 — calibration ❌ NOT IMPLEMENTED
+### Phase 3 — relative-height baseline 🟡 TRAINED ON REAL DATA, RELATIVE ONLY
 
+Code lives in `depthwizard.relative`; config in `configs/phase3.yaml`.
+
+- [x] DFC2019 pair discovery, 256×256 paired crops (one window cut from both
+      rasters), nodata / padding masking, spatial (scene-level) validation split
+- [x] RGB/AGL registration check: a pair must share a CRS, grid orientation
+      and footprint (not just pixel dimensions), or it is refused
+- [x] Valid *negative* AGL heights are kept as measurements; the loss's log
+      transform is extended symmetrically below zero so they stay finite
+- [x] Training crops change every epoch, including with the shipped
+      `num_workers: 4` + `persistent_workers: true` (the epoch is shared with
+      the worker processes)
+- [x] Frozen encoder: DINOv2-Small (default) or ConvNeXt-Tiny (configured
+      alternative), pretrained weights required unless random init is
+      explicitly opted into. DINOv2's 14 px patches: the *network input* is
+      resized 256 → 252; the target stays 256 and the prediction is upsampled
+      back
+- [x] DPT-style decoder (GroupNorm) and a single relative-height head (no
+      semantic, shadow or uncertainty head)
+- [x] Masked scale-invariant log loss, NaN-safe on invalid pixels
+- [x] Training loop: bf16 when supported (explicit refusal or recorded fp32
+      fallback otherwise), batch 8 × accumulation 2 = 16, per-epoch
+      checkpoints carrying model / optimiser / scheduler state, config and
+      measured losses
+- [x] Per-tile inference (`python -m depthwizard.relative.inference`) with an
+      RGB / ground truth / **Relative Height** figure; no metric conversion.
+      Training tiles are 256 px; **inference tiles are 512 px**
+      (`inference.tile_size`), run as a genuine 512 px forward pass (DINOv2
+      input 504 = 36 patches), not an upsampled 256 px prediction
+- [x] **Pretrained fallback** for when training stalls
+      (`--fallback --fallback-reason "..."`): the raw output of a frozen,
+      pretrained Depth Anything V2-Small (DINOv2-Small backbone). It is
+      relative inverse depth, unitless, **not metres**, not trained on DFC2019,
+      and labelled as such in every JSON sidecar and figure. Weights are never
+      replaced with random ones
+- [x] Random-init *architecture stub* (`build_fallback_model`) for offline
+      tests only — labelled `random_init` everywhere, never "pretrained", and
+      not the fallback above
+
+**Environment (this machine):** Python 3.10 venv at `.venv` with torch
+2.6.0+cu124 (CUDA available, RTX 4050 Laptop GPU, 6 GB, bf16 supported),
+timm 1.0.30 and transformers 5.17.0. DepthWizard is installed editable
+(`pip install -e .`), so `python -m depthwizard.relative.train` and
+`python -m depthwizard.relative.inference` run without extra path setup. The
+torch-dependent Phase 3 tests are run and pass on CPU. The pretrained
+DINOv2-Small weights have been fetched once; the Depth Anything V2-Small
+weights have not (its download test is opt-in: `DEPTHWIZARD_ALLOW_DOWNLOAD=1`).
+
+**Training run (real data, this machine).** The shipped `configs/phase3.yaml`
+settings, unchanged, on the real DFC2019 Track 1 training set (kept outside
+Git): 2,783 RGB/AGL pairs, `per_city_scene` split into 2,168 training and 615
+validation pairs (11 held-out tiles per city, tile-disjoint). 10 epochs × 1,084
+optimiser steps on the RTX 4050 in bf16 (no substitution), 4 persistent
+DataLoader workers, frozen pretrained DINOv2-Small
+(`timm:vit_small_patch14_dinov2.lvd142m`, no fallback model), 548,609 trainable
+and 21,654,912 frozen parameters. No OOM: peak allocated VRAM ≈ 297 MiB. About
+34 minutes wall-clock.
+
+| | epoch 0 | epoch 6 (best) | epoch 9 (last) |
+|---|---|---|---|
+| training loss | 0.432 | 0.267 | 0.256 |
+| validation loss, 512 fixed crops | 0.421 | **0.335** | 0.340 |
+
+Training loss fell every epoch. Validation loss fell overall, but it did not
+fall every epoch and it levelled off after epoch 6. `best.pt` (epoch 6) and
+every per-epoch checkpoint reload through `load_model_from_checkpoint`.
+
+**Validation of `best.pt` on the full held-out grid.** All 9,840 validation
+crops scored, none skipped: **validation loss 0.317**. This is the training
+loss function (scale-invariant log loss, λ = 0.5). It is **not an accuracy**.
+
+**Descriptive sanity check on 8 held-out tiles** (4 JAX, 4 OMA, 512 px):
+per-tile Pearson correlation between the prediction and the loss's
+log-height of the ground truth ranges from 0.55 to 0.91 on the 7 tiles that
+have height structure. Spearman correlation ranges from 0.59 to 0.79. These
+are correlations, **not accuracy percentages**, and they say nothing about
+metric DSM accuracy. The eighth tile (an airport apron with ground truth
+within ±0.005 m) has no height structure, so its correlation (≈ 0) carries no
+information. In the figures, buildings, trees and elevated roads appear where
+the ground truth has them. Edges are blurred and the relative height of very
+tall structures is compressed.
+
+**Still open:**
+
+- The output is **relative and unitless**. It is not metres, and each tile has
+  its own unknown offset, so tiles are not stitched. Converting it to metres
+  is Phase 4.
+- **No accuracy exists.** Losses and correlations above are not accuracy, and
+  no metric error has been measured.
+- The split holds out tiles, not cities. Generalisation to an unseen city is
+  untested.
+- The unit tests still use small *synthetic* rasters and a toy CPU model; the
+  real-data run above is a separate, manual verification.
+
+### Phase 4 — calibration & surface products ❌ NOT IMPLEMENTED
+
+- [ ] Relative → metric calibration (shadow geometry, SRTM / CartoDEM)
 - [ ] Terrain slope and off-nadir view corrections
 - [ ] Per-scene bias calibration
-- [ ] Learned refinement model *(no model is built yet)*
-
-### Phase 4 — surface products ❌ NOT IMPLEMENTED
-
 - [ ] DSM generation
 - [ ] DTM extraction
 - [ ] nDSM (normalised height surface)
@@ -601,10 +696,13 @@ and CLI tools, install them via conda:
 conda install -c conda-forge gdal
 ```
 
-`torch` is declared as the `ml` extra rather than a core dependency, since
-nothing here trains or runs a model and the CUDA build is ~2.5 GB:
+`torch`, `timm` and `transformers` (for the Phase 3 pretrained fallback) are
+declared as the `ml` extra rather than core dependencies. Only Phase 3 needs
+them, and the CUDA wheel is a 2.53 GB download before it is unpacked. Install
+the CUDA build first, so pip does not pull a CPU wheel:
 
 ```bash
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
 pip install -e ".[ml]"
 ```
 
