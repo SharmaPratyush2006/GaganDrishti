@@ -16,13 +16,23 @@ Smart India Hackathon 2026 — problem statement **SIH26175**.
 > Building footprints come from the DFC2019 **CLS labels** (class 6); nothing
 > here *detects* buildings. **Phase 4b** (georeferenced DSM = DEM + calibrated
 > AGL, exported as COG) is implemented and validated on the **synthetic**
-> fixture only; the real-data georeferenced path is **NOT YET VERIFIED**. There
+> fixture only; the real-data georeferenced path is **NOT YET VERIFIED**.
+> **Phase 5** (validation harness) is implemented. It has been run as a
+> **city-held-out model evaluation with LiDAR-anchored per-tile metric
+> calibration**: the model was trained on Jacksonville (JAX) only and evaluated
+> on Omaha (OMA). This is **not** an unseen-city zero-shot result, because OMA
+> lidar sets each tile's metric scale. Only 714 of 7,072 OMA tiles could be
+> calibrated (see [Phase 5](#phase-5--validation-harness--implemented)). There
 > is no viewer yet (Phase 7).
 >
-> **The real-world figures in this repository are the Phase 4a DFC2019
-> measurements, and each one carries its coverage.**
-> - The primary one is a shadow-measured building evaluation: 1,762 evaluated
->   / 3,257 eligible / 20,558 total buildings, 99 % in Omaha.
+> **The real-world figures in this repository are DFC2019 measurements, and
+> each one carries its coverage.**
+> - Phase 4a (model trained on both cities, tile-held-out): a shadow-measured
+>   building evaluation, 1,762 evaluated / 3,257 eligible / 20,558 total
+>   buildings, 99 % in Omaha.
+> - Phase 5 (model trained on JAX only, OMA held out): dense AGL on the 714
+>   calibrated OMA tiles (10 % of OMA tiles). The pooled numbers are dominated
+>   by per-tile calibration error, not model quality; see Phase 5.
 > - No Jacksonville performance is claimed.
 > - Figures against the synthetic fixture, whose heights were *specified*
 >   rather than measured, are tagged `SYNTHETIC`.
@@ -177,7 +187,8 @@ DepthWizard/
 ├── configs/
 │   ├── default.yaml              # the scene, sun, paths and logging config
 │   ├── phase3.yaml               # relative-height training (template)
-│   └── phase4.yaml               # Phase 4a calibration
+│   ├── phase4.yaml               # Phase 4a calibration
+│   └── phase5.yaml               # Phase 5 validation harness
 ├── data/
 │   ├── raw/                      # source imagery          (git-ignored)
 │   ├── processed/                # generated fixtures       (git-ignored)
@@ -206,7 +217,15 @@ DepthWizard/
 │   │   └── pipeline.py           # detect -> measure -> invert
 │   ├── validation/
 │   │   ├── evaluation.py         # reference interface, metrics where they exist
-│   │   └── plots.py              # predicted vs reference scatter
+│   │   ├── plots.py              # predicted vs reference scatter
+│   │   ├── config.py             # Phase 5: configs/phase5.yaml loader
+│   │   ├── masks.py              # Phase 5: validity mask, terrain/building masks
+│   │   ├── metrics.py            # Phase 5: MAE, RMSE, Pearson r, δ thresholds
+│   │   ├── spatial_split.py      # Phase 5: geographic split audit vs checkpoint
+│   │   ├── confidence.py         # Phase 5: shadow / water / sun-band proxy
+│   │   ├── error_map.py          # Phase 5: error GeoTIFF + PNG
+│   │   ├── report.py             # Phase 5: Markdown report
+│   │   └── run.py                # Phase 5: one-command harness
 │   ├── relative/                 # Phase 3: relative AGL model
 │   ├── calibration/              # Phase 4a: pixel-space metric calibration
 │   │   ├── footprints.py         # DFC2019 CLS class 6 -> footprints
@@ -1183,16 +1202,526 @@ nodata and dtype preserved. The pixels match memory exactly.
 - a real georeferenced scene with a real DEM;
 - DFC2019, which has no georeferencing.
 
-### Phase 5 — validation 🟡 INTERFACE IMPLEMENTED
+### Phase 5 — validation harness ✅ IMPLEMENTED
 
-- [x] Reference-data interface (`ReferenceSet`, JSON/CSV loading), requiring a
-      stated source on every measurement
-- [x] Scoring against the synthetic fixture's specified heights, tagged
-      `SYNTHETIC` wherever it is reported
-- [x] Error reporting and scatter plot, both absent where references are
-- [ ] Manually measured real references through this interface *(none
-      supplied; the real-world figures that exist are Phase 4a's, scored
-      against DFC2019 lidar AGL)*
+> **Real-world validation: measured once, as a city-held-out model evaluation
+> with LiDAR-anchored per-tile metric calibration (JAX → OMA). This is NOT an
+> unseen-city zero-shot result.**
+> - The Phase 3 model was trained on JAX only. OMA was held out of both
+>   training and checkpoint selection, and both leakage audits passed.
+> - OMA lidar sets each tile's metric scale through 2–3 reference buildings,
+>   which are excluded from scoring.
+> - Only 714 of 7,072 OMA tiles (10 %) could be calibrated, and the pooled
+>   metrics are dominated by that per-tile calibration.
+>
+> See [the result](#real-world-validation-result-jax--oma) and
+> [how to reproduce it](#reproducing-the-jax--oma-experiment). The shipped
+> `best.pt` (trained on both cities) is still refused by the audit.
+
+Code lives in `depthwizard.validation`; config in `configs/phase5.yaml`.
+Commands:
+
+```bash
+# SYNTHETIC VALIDATION: Phase 4b products vs the Phase 0 fixture's specified truth
+# (needs: python -m depthwizard.surfaces.run synthetic --config configs/phase4.yaml)
+python -m depthwizard.validation.run synthetic --config configs/phase5.yaml
+
+# REAL-WORLD VALIDATION: Phase 4a calibrated AGL on DFC2019 vs DFC2019 lidar AGL,
+# on a geographically held-out city
+python -m depthwizard.validation.run dfc --config configs/phase5.yaml \
+    --relative-config configs/phase3.local.yaml
+```
+
+Both targets run the same steps:
+1. Load the config and identify the held-out region.
+2. Load the predictions and references.
+3. Build the validity mask and the terrain/building masks.
+4. Compute the metrics.
+5. Write the error raster and figure.
+6. Compute the confidence proxy.
+7. Write the Markdown and JSON report, and print a short summary.
+
+The harness never trains, fits or recalibrates anything. It never swaps one
+data source for another: the `dfc` target does not fall back to synthetic data.
+A missing input (a Phase 4b/4a report, a checkpoint, the DFC2019 root, a CLS
+raster) fails with a message that names it. The CLI then exits with status 2.
+
+#### SYNTHETIC VALIDATION vs REAL-WORLD VALIDATION
+
+| | SYNTHETIC VALIDATION (`synthetic`) | REAL-WORLD VALIDATION (`dfc`) |
+| --- | --- | --- |
+| prediction | Phase 4b `synthetic_agl.tif` and `synthetic_dsm.tif` | Phase 4a `a·exp(z_rel) + b` per 512 px tile; `z_rel` re-inferred with the checkpoint the Phase 4a report names, `a, b` read from its `per_tile.jsonl` |
+| reference | the fixture's **specified** heights (DSM: + the analytic terrain plane) | DFC2019 lidar AGL (metres) |
+| terrain / building | the fixture's specified footprints | CLS 2 = terrain, CLS 6 = building |
+| what it shows | the harness and the pipeline's geometry are correct | accuracy on a held-out city, with LiDAR-anchored per-tile calibration (not zero-shot) |
+| status | run | **measured** for JAX → OMA (`epoch_009.pt`); **refused** for the shipped `best.pt` |
+
+Synthetic metrics are never real-world accuracy. Every synthetic report and
+figure is labelled `SYNTHETIC`.
+
+#### Spatial validation rule
+
+Training and held-out regions must be **geographically separate**:
+- The regions are cities, the only region identifier DFC2019 carries
+  (`JAX_004_007` → `JAX`).
+- `configs/phase5.yaml` declares `train_regions: [JAX]` and
+  `heldout_regions: [OMA]`. OMA is held out because Phase 4a returns a shadow
+  calibration almost only on OMA tiles.
+- There is no random-split option.
+
+The declaration is **checked against the checkpoint itself**. Every Phase 3
+checkpoint embeds its config, so `spatial_split.audit_region_split` recomputes
+exactly which pairs it was trained on. The run is refused (`SplitError`) when:
+- a held-out city appears in training;
+- the checkpoint used a random split;
+- the checkpoint trained on an undeclared region, or a declared training region
+  never trained;
+- any geographic tile falls on both sides.
+
+The audit also refuses **model-selection leakage**. A checkpoint can be
+trained without the held-out city and still have been *chosen* with it. When
+the held-out city is the checkpoint's validation side, `best.pt` is the epoch
+with the lowest held-out validation loss. In that case only the **final
+pre-set epoch** (`training.epochs − 1`, i.e. `epoch_009.pt` for 10 epochs) is
+accepted. The check reads only metadata every Phase 3 checkpoint stores
+(`epoch`, `best_epoch`, `training.epochs`); a checkpoint without it is
+refused, because its selection cannot be verified.
+
+One caveat the audit cannot remove: Phase 4a fixes each tile's sun scale from
+the DFC2019 lidar AGL of 2–3 reference buildings **inside that tile**. Phase 5
+excludes those buildings' pixels from every metric, and the report says so.
+Still, a held-out-city result is not entirely truth-free: that ground truth
+enters the calibration.
+
+The JAX → OMA experiment is therefore a **city-held-out model evaluation with
+LiDAR-anchored per-tile metric calibration**. It is **not** an "unseen-city
+zero-shot" result:
+- the model (Phase 3) was trained on JAX only and never saw OMA, in training or
+  in model selection;
+- OMA lidar is used in two separate roles: per-tile calibration, through the
+  2–3 reference buildings per tile, and independent scoring, with those
+  reference buildings excluded.
+
+**The shipped `best.pt` is still refused.** It was trained with
+`per_city_scene`, i.e. tile-disjoint within **both** cities, so the audit finds
+OMA pairs among its training pairs. Its refusal report is
+`data/outputs/phase5/dfc/validation_report.md` (OMA: 1,397 training pairs).
+
+The experiment that satisfies the rule was run in four steps, in this order.
+Each is detailed [below](#real-world-validation-result-jax--oma).
+1. Train a Phase 3 checkpoint on JAX only
+   (`split: {mode: scene_prefix, val_scene_prefixes: [OMA]}`). Use its
+   **final epoch** (`epoch_009.pt`), **not** `best.pt`: with this split,
+   `best.pt` is chosen by OMA validation loss, and Phase 5 refuses it.
+2. **Before any OMA result was inspected**, re-check the Phase 4a thresholds on
+   the JAX-only training split. The frozen thresholds in `configs/phase4.yaml`
+   came from an ablation whose training split included OMA tiles.
+3. Run the held-out Phase 4a calibration on OMA with that checkpoint.
+4. Run the Phase 5 `dfc` command on that Phase 4a output.
+
+#### Metrics
+
+Metrics use valid pixels only, where `e = prediction − reference`:
+
+| metric | definition | units |
+| --- | --- | --- |
+| MAE | mean(\|e\|) | the product's units (read from its `UNITS` tag; never assumed) |
+| RMSE | `sqrt(mean(e²))` | same |
+| bias | `mean(e)` (positive = over-prediction) | same |
+| Pearson r | correlation of prediction with reference | dimensionless |
+| δ < 1.25, δ < 1.25², δ < 1.25³ | fraction of pixels with `max(p/r, r/p) < t` | fraction in [0, 1] |
+
+- **Pearson r** is *not computable* in three cases: no valid pixels, fewer
+  than 3 pixels, or zero variance in the prediction or the reference. The
+  report then gives that reason, never 0.
+- **δ** is evaluated only where prediction **and** reference are both > 0. The
+  pixels excluded as non-positive are counted and reported. For AGL this
+  excludes flat ground (reference 0 m), so terrain δ on AGL is not computable
+  by definition.
+- Metrics are pooled across tiles from additive sums, so any number of tiles
+  streams exactly on the CPU.
+
+#### NaN / nodata handling and valid-pixel counting
+
+`masks.build_valid_mask` returns the evaluation mask **and** a count of every
+excluded pixel. Each pixel is counted once, under the first reason that
+applies:
+1. prediction nodata;
+2. prediction NaN/inf;
+3. reference nodata;
+4. reference NaN/inf;
+5. reference marked invalid;
+6. outside the region;
+7. explicitly excluded (on DFC2019, the reference buildings each tile's sun
+   scale was fitted on).
+
+Valid plus excluded always equals the total. The metric accumulator refuses a
+mask that lets a non-finite value through, so nothing is dropped out of sight.
+The report lists the valid-pixel count for every product and category.
+
+#### Terrain and building metrics
+
+Every metric is reported separately for **OVERALL**, **TERRAIN** and
+**BUILDING**. The masks come from labels the data carries: DFC2019 CLS, or
+the fixture's specified footprints. They are never derived from the prediction
+or the reference height. On DFC2019, other CLS classes (vegetation, water,
+bridges, unlabelled) count only towards OVERALL. A category the data cannot
+supply is reported as not yet measured, never as zero.
+
+#### Error map
+
+`error = prediction − reference` per pixel, on the prediction's own grid.
+Invalid pixels are nodata (−9999, never 0).
+
+- **GeoTIFF**:
+  - Georeferenced grids are written as COGs through the Phase 4b
+    `write_cog` / `validate_cog`, with CRS, transform, size, bounds, nodata and
+    every pixel checked on read-back. They open in QGIS as-is.
+  - DFC2019 tiles have no CRS, so their error maps are written without one,
+    keeping the source's pixel-space transform. Nothing is invented to look
+    georeferenced.
+- **PNG**:
+  - A diverging colour map centred on zero (blue = under-prediction, red =
+    over-prediction), with invalid pixels in grey and map-coordinate axes when
+    georeferenced.
+  - Beside the map is a histogram of **all** valid errors, unclipped.
+  - The colour scale spans ± the 99th percentile of |error|. Larger errors are
+    drawn in the end colours, never hidden; they are counted, and the true
+    min/max are printed. The raster itself is never clipped.
+
+#### Confidence proxy
+
+Rule-based flags, **not** a learned uncertainty and **not** a probability of
+correctness. They use only what earlier phases produce:
+
+| condition | source | effect |
+| --- | --- | --- |
+| shadow occlusion | Phase 2 `ClassicalShadowDetector` (unchanged) | REDUCED |
+| water | a data label (DFC2019 CLS 9) | UNSUITABLE |
+| sun elevation outside 25°–45° (inclusive) | Phase 2 `sun_band_status` on the scene's sun elevation | REDUCED (every pixel of the scene) |
+
+- **States**, with precedence (first applicable wins):
+  - `INVALID`;
+  - `UNSUITABLE`;
+  - `REDUCED`;
+  - `NOT_ASSESSED`: no flag fired, but an input was unavailable;
+  - `HIGH`: every check ran and none fired.
+- An unavailable input is reported as "not available", never as "0 pixels
+  affected". Pixels it would cover cannot be HIGH.
+- On the fixture, water is not available (no land-cover labels).
+- On DFC2019, the sun band is not available: there is no sun metadata, and the
+  GSD is unverified.
+- On DFC2019 the shadow detector also marks dark asphalt (a Phase 4a finding),
+  so the shadow flag over-counts there.
+- The report also gives MAE/RMSE per confidence state, so you can check
+  whether the proxy separates good pixels from bad ones.
+
+#### Generated artifacts (git-ignored)
+
+| path | contents |
+| --- | --- |
+| `data/outputs/phase5/synthetic/validation_report.md` | Markdown report, SYNTHETIC |
+| `data/outputs/phase5/synthetic/phase5_report.json` | the same, machine-readable |
+| `data/outputs/phase5/synthetic/error_map_{agl,dsm}.tif` | error COGs, EPSG:32643 |
+| `data/outputs/phase5/synthetic/error_map_{agl,dsm}.png` | error figures |
+| `data/outputs/phase5/synthetic/confidence_{agl,dsm}.tif` | confidence-state rasters (codes 0–4) |
+| `data/outputs/phase5/dfc/validation_report.md`, `phase5_report.json` | the refusal of the shipped `best.pt` (trained on both cities), with "not yet measured" |
+| `data/outputs/phase3_jax_only/` | JAX-only Phase 3: `checkpoints/epoch_000…009.pt` (plus `best.pt`, **not used**), `train.log`, `phase3_jax_only_report.json` |
+| `data/outputs/phase4a_jax_only_training_ablation/` | JAX-only ablation: `ablation_report.json`, `decision_analysis.json` (bootstrap), `frozen_decisions.json`, `buildings.jsonl`, `tiles.jsonl`, `run.log` |
+| `data/outputs/phase4a_jax_only/` | held-out OMA Phase 4a: `phase4a_report.json`, `per_tile.jsonl`, 4 diagnostic figures, `run.log` |
+| `data/outputs/phase5_jax_only/dfc/validation_report.md`, `phase5_report.json` | the REAL-WORLD Phase 5 report (JAX → OMA) |
+| `data/outputs/phase5_jax_only/dfc/error_maps/<tile>.tif` | 714 per-tile error GeoTIFFs (no CRS, 512 × 512, float32, nodata −9999) |
+| `data/outputs/phase5_jax_only/dfc/error_maps/<tile>.png` | 8 error figures: the first tiles in sorted tile-ID order, never chosen by accuracy |
+
+#### SYNTHETIC VALIDATION result (specified, not measured, heights)
+
+This is the fixture run through the harness. It checks the harness, not
+real-world accuracy. The relative field is the Phase 4a/4b constructed
+stand-in, not a Phase 3 prediction.
+
+| AGL | valid px | MAE (m) | RMSE (m) | Pearson r | δ < 1.25 |
+| --- | ---: | ---: | ---: | --- | --- |
+| overall | 262,144 | 0.3140 | 0.3156 | 1.0000 | 1.0000 |
+| terrain | 253,844 | 0.3190 | 0.3190 | not computable (constant field) | not computable (reference 0 m) |
+| building | 8,300 | 0.1620 | 0.1832 | 1.0000 | 1.0000 |
+
+- The DSM gives the same MAE/RMSE. They equal the figures Phase 4b recorded
+  for `synthetic_dsm.tif`, and a test asserts this.
+- The shadow flag marks 12,599 pixels (4.8 %) REDUCED.
+- The sun (45°) is within the band.
+- Water is not available, so no pixel is HIGH.
+
+#### REAL-WORLD VALIDATION result: JAX → OMA
+
+> **City-held-out model evaluation with LiDAR-anchored per-tile metric
+> calibration. NOT an unseen-city zero-shot result.**
+> - Training region: **JAX**. Held-out region: **OMA**, excluded from Phase 3
+>   training and checkpoint selection.
+> - OMA lidar sets each tile's metric scale (2–3 reference buildings per tile).
+>   Those buildings are excluded from scoring.
+> - The pooled figures below cover 10 % of OMA tiles and are dominated by
+>   per-tile calibration error. They are **not** a measure of the Phase 3
+>   model's quality on its own.
+
+**Step 1 — JAX-only Phase 3 training.** The shipped `configs/phase3.yaml`
+settings were used unchanged, apart from the split and the output paths.
+- Split: `scene_prefix`, `val_scene_prefixes: [OMA]`.
+- Training: 1,015 JAX pairs (53 geographic tiles). Validation side: 1,768 OMA
+  pairs (55 geographic tiles). No scene overlap.
+- 10 epochs × 508 optimiser steps, bf16 on the RTX 4050, peak VRAM 297 MiB,
+  about 15 min 45 s wall-clock. No OOM, no NaN/Inf, 0 skipped batches.
+- **Downstream checkpoint: `epoch_009.pt`**, the final pre-set epoch
+  (train loss 0.34271, OMA validation loss 0.40826).
+  - `best.pt` is epoch 2, selected by OMA validation loss (0.39193). It was
+    **not used**, and Phase 5 refuses it.
+  - Validation loss was monitored only: the learning-rate schedule is
+    epoch-based cosine, so it never influenced the weights.
+- The original `data/outputs/phase3/` checkpoints were verified unchanged
+  (SHA-256).
+
+**Step 2 — JAX-only Phase 4a training-split ablation** (no OMA data read).
+- Data: 209 JAX training images (4 views per geographic tile), 53 geographic
+  tiles, 836 tiles of 512 px. The frozen variant has 18 calibratable tiles and
+  160 leave-references-out targets.
+- The existing `depthwizard.calibration.ablation` functions were used
+  unchanged. Unlike `run ablation`, the run skipped the held-out height census
+  (which would read OMA lidar); see
+  [Reproducing](#reproducing-the-jax--oma-experiment).
+- **Decision rule, fixed before the run:**
+  - criteria: within-tile Spearman of L vs h, MAD of log k, and
+    leave-references-out (LRO) MAE;
+  - uncertainty: a 95 % bootstrap over geographic tiles (1,000 draws, seed
+    20260928);
+  - **CHANGE** only if an alternative is significantly better on at least one
+    criterion and significantly worse on none;
+  - a better point estimate whose interval includes 0 is **INSUFFICIENT
+    EVIDENCE** (the frozen choice is kept);
+  - otherwise **KEEP**.
+
+Frozen variant: Spearman 0.209, MAD log k 0.261, LRO MAE 2.53 m. Differences
+are alternative − frozen, with 95 % intervals.
+
+| setting | frozen | JAX-only evidence | decision |
+| --- | --- | --- | --- |
+| gap tolerance | 2 px | LRO MAE: 4 px −0.64 m [−1.74, +0.41]; 6 px −0.69 m [−2.09, +0.02]. Validity is not better at either. | INSUFFICIENT EVIDENCE → keep |
+| isolation | 0 (off) | The rule literally gave CHANGE: 10 px LRO MAE −1.21 m [−2.06, −0.41]. But that comparison is unpaired: 10 px calibrates 3 tiles, all from one geographic tile (JAX_022). On the same tiles: MAE 1.322 vs 1.393 m, and median error worse (1.177 vs 1.121 m). | INSUFFICIENT EVIDENCE → keep (owner's decision) |
+| merged-shadow check | on | Turning it off: LRO MAE +0.33 m [0.00, +1.15]. It is worse on every point estimate. | KEEP |
+| shadow threshold | image Otsu | Ground-only Otsu: LRO MAE −0.31 m [−1.63, +0.38]. Nothing significant. | INSUFFICIENT EVIDENCE → keep |
+| k estimator | median | Mean: +0.04 m. Inverse-variance: −0.22 m [−0.59, +0.08]. | KEEP / INSUFFICIENT EVIDENCE → keep |
+| reference gates, footprint, azimuth and fit settings, a/SE ≥ 2 label | as shipped | Never ablated (not data-derived). | KEEP |
+
+No setting changed: `configs/phase4.yaml` is untouched. The decisions are
+recorded in
+`data/outputs/phase4a_jax_only_training_ablation/frozen_decisions.json`.
+
+**Step 3 — held-out OMA Phase 4a calibration** (`epoch_009.pt`, frozen
+thresholds; 1,764 s).
+- Data: all 1,768 OMA images (55 geographic tiles), 7,072 tiles of 512 px.
+  No JAX tile was processed.
+
+| stage | tiles |
+| --- | ---: |
+| all OMA tiles | 7,072 |
+| with buildings | 4,898 |
+| sun azimuth recovered | 5,200 |
+| ≥ 2 valid references (sun calibrated) | 831 |
+| a, b fit returned | **714** (444 images, 26 of 55 geographic tiles) |
+| fit `identifiable_positive` | **166** (20 % of 831 attempted) |
+
+- Of the 714 fits: 166 `identifiable_positive`, 267 `statistically_weak`,
+  281 `non_positive`. Another 117 attempts were unidentifiable (insufficient
+  constraints).
+- The fitted scale is mostly unidentifiable: median a/SE = 0.54.
+- **No tile with buildings ≥ 20 m could be calibrated** (56 tiles, 0 fits).
+- Per-building shadow evaluation (no a, b): 11,029 evaluated / 17,864
+  eligible / 62,510 kept footprints. MAE 2.77 m, RMSE 4.96 m, Spearman of
+  shadow height vs true height 0.16.
+- ORACLE control (diagnostic only; a, b fitted to lidar): building-pixel MAE
+  1.58 m, vs 2.82 m with the shadow a, b. The JAX-trained field does carry
+  height structure in OMA; the shadow calibration adds about 1.2 m.
+
+**Step 4 — Phase 5 validation.**
+- Command:
+  `python -m depthwizard.validation.run dfc --config configs/phase5.jaxonly.local.yaml --relative-config configs/phase3.local.yaml`.
+  Exit 0.
+- **Spatial split audit: PASSED.**
+  - Checkpoint split `scene_prefix`; training pairs `{JAX: 1015}`.
+  - Validation side `{OMA}`: 1,768 pairs over 55 geographic tiles, 0 scene
+    overlap, not random.
+- **Model-selection audit: PASSED.** Epoch 9 of 10 (the final epoch;
+  `best_epoch` 2).
+- Evaluated: the 714 calibrated tiles from 444 images. All three fit labels
+  are included, as `configs/phase5.yaml` fixed before any OMA result existed.
+- Valid pixels: 185,197,749 of 187,170,816.
+  - 1,973,064 calibration reference-building pixels were excluded.
+  - 3 non-finite reference pixels were excluded.
+
+AGL, metres; δ values are fractions over pixels where prediction and reference
+are both > 0:
+
+| region | valid px | MAE | RMSE | bias | Pearson r | δ < 1.25 | δ < 1.25² | δ < 1.25³ | δ domain px |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| overall | 185,197,749 | 3.9986 | 5.9945 | +1.4502 | 0.0594 | 0.1171 | 0.2252 | 0.3206 | 117,740,159 |
+| terrain (CLS 2) | 123,170,402 | 3.8606 | 5.6801 | +3.1151 | 0.0160 | 0.0491 | 0.0968 | 0.1423 | 60,490,946 |
+| building (CLS 6) | 21,597,325 | 2.8245 | 4.1555 | −1.0581 | 0.0884 | 0.2439 | 0.4520 | 0.6153 | 20,908,212 |
+
+Overall and building MAE/RMSE, and the valid-pixel count, match Phase 4a's
+independent computation on the same tiles.
+
+Confidence proxy:
+
+| check | status | flagged valid px |
+| --- | --- | ---: |
+| shadow occlusion | evaluated (Phase 2 detector) | 102,918,279 (55.6 %) |
+| water | evaluated (CLS 9) | 785,413 (0.42 %) |
+| sun band 25–45° | **not available** (no sun metadata; GSD unverified) | not available |
+
+| state | pixels | MAE / RMSE (m) |
+| --- | ---: | --- |
+| UNSUITABLE | 785,413 | 4.36 / 5.98 |
+| REDUCED | 102,376,703 | 4.13 / 6.28 |
+| NOT_ASSESSED | 82,035,633 | 3.83 / 5.61 |
+| HIGH | 0 | not yet measured |
+
+Error maps: 714 GeoTIFFs, each written, read back and matched to memory
+exactly. They have no CRS (DFC2019 has none), a pixel-space transform with the
+tile offset, and nodata −9999. There are also 8 PNG figures; see
+[Generated artifacts](#generated-artifacts-git-ignored).
+
+**How to read these numbers.**
+- **Pearson r ≈ 0.06 is not a model-quality result.** It pools 714 tiles, each
+  with its own shadow-calibrated a, b, and most of those scales are
+  unidentifiable. Per-tile offset error dominates.
+- **The identifiable fits are not more accurate** (Phase 4a: all-pixel MAE
+  2.95 m for `identifiable_positive` vs 2.82 m for `statistically_weak`).
+- **Terrain δ is low largely because the terrain reference AGL is near 0 m**,
+  where small absolute errors give large ratios.
+- **The samples are not independent.** Several views of the same place are
+  evaluated, and 26 of 55 OMA geographic tiles contribute.
+- These figures are not comparable with the Phase 4a numbers above, which came
+  from a different model and a different held-out set.
+
+**Not yet measured:**
+- the 6,358 uncalibrated OMA tiles (90 %) and the 29 uncalibrated geographic
+  tiles;
+- buildings ≥ 20 m (no such tile could be calibrated);
+- HIGH-confidence pixels, and the sun-band check (not possible on DFC2019);
+- a georeferenced error mosaic (DFC2019 Track 1 has no georeferencing);
+- any Jacksonville performance;
+- any truth-free (zero-shot) metric result.
+
+#### Reproducing the JAX → OMA experiment
+
+The experiment uses three **git-ignored** local configs (`configs/*.local.yaml`)
+that are not in the repository. Each is a small, documented change to a
+tracked config. `configs/phase3.local.yaml` is the existing machine-specific
+file that points at your DFC2019 copy.
+
+`configs/phase3.jaxonly.local.yaml`: everything else is inherited from
+`phase3.local.yaml` → `phase3.yaml`.
+
+```yaml
+extends: phase3.local.yaml
+run_id: phase3_jax_only
+output_dir: data/outputs/phase3_jax_only
+dataset:
+  split:
+    mode: scene_prefix
+    val_scene_prefixes: [OMA]
+checkpoint:
+  dir: data/outputs/phase3_jax_only/checkpoints
+```
+
+`configs/phase4.jaxonly.local.yaml`: a copy of `configs/phase4.yaml` with
+**exactly four keys changed** and every threshold identical. (The Phase 4 loader
+has no `extends`.)
+
+```bash
+sed -e 's|^run_id: phase4a$|run_id: phase4a_jax_only|' \
+    -e 's|^output_dir: data/outputs/phase4a$|output_dir: data/outputs/phase4a_jax_only|' \
+    -e 's|^relative_config: configs/phase3.yaml$|relative_config: configs/phase3.jaxonly.local.yaml|' \
+    -e 's|^checkpoint: data/outputs/phase3/checkpoints/best.pt$|checkpoint: data/outputs/phase3_jax_only/checkpoints/epoch_009.pt|' \
+    configs/phase4.yaml > configs/phase4.jaxonly.local.yaml
+```
+
+`configs/phase5.jaxonly.local.yaml`: a copy of `configs/phase5.yaml` with
+**exactly two keys changed**. The split (train JAX, hold out OMA) and
+`fit_classes` are unchanged.
+
+```bash
+sed -e 's|^output_dir: data/outputs/phase5$|output_dir: data/outputs/phase5_jax_only|' \
+    -e 's|^  phase4a_dir: data/outputs/phase4a$|  phase4a_dir: data/outputs/phase4a_jax_only|' \
+    configs/phase5.yaml > configs/phase5.jaxonly.local.yaml
+```
+
+Commands, in order:
+
+```bash
+# 1. JAX-only Phase 3 (use epoch_009.pt downstream, never best.pt)
+python -m depthwizard.relative.train --config configs/phase3.jaxonly.local.yaml
+
+# 2. JAX-only Phase 4a training-split ablation (see note below). --output-dir keeps
+#    a rerun out of the recorded data/outputs/phase4a_jax_only_training_ablation/
+#    (the ablation writes to <output-dir>_training_ablation)
+python -m depthwizard.calibration.run ablation --config configs/phase4.jaxonly.local.yaml \
+    --relative-config configs/phase3.jaxonly.local.yaml \
+    --output-dir data/outputs/phase4a_jax_only_rerun
+
+# 3. held-out OMA Phase 4a calibration
+python -m depthwizard.calibration.run dfc --config configs/phase4.jaxonly.local.yaml \
+    --relative-config configs/phase3.jaxonly.local.yaml
+
+# 4. Phase 5 real validation (the relative config only supplies the DFC2019 root;
+#    the split is read from the checkpoint)
+python -m depthwizard.validation.run dfc --config configs/phase5.jaxonly.local.yaml \
+    --relative-config configs/phase3.local.yaml
+```
+
+**Note on step 2.** The recorded ablation was not run through this CLI. It used
+an untracked driver that calls the same unmodified functions
+(`select_views(train, 4)`, `building_gate_records`, `summarise_ablation`,
+`height_census` on the training side). The driver differs in only two ways:
+- it asserted the training side is JAX only;
+- it skipped `run_ablation`'s held-out height census, which would read OMA
+  lidar.
+
+The CLI above reproduces the same per-building measurements and summary into
+`data/outputs/phase4a_jax_only_rerun_training_ablation/`, but its report also
+contains an OMA height census. That census is a data description, never used
+for any decision.
+
+The bootstrap decision analysis (`decision_analysis.json`) was also an
+untracked script. Its method is fully specified above, and it re-uses
+`summarise_variant`:
+- resample the geographic tiles with replacement;
+- recompute each variant's criteria;
+- take the 2.5 / 97.5 percentiles of the alternative − frozen differences
+  (1,000 draws, seed 20260928).
+
+#### Tests
+
+Tests are `tests/test_validation_{metrics,split_and_confidence,error_map_report,run}.py`.
+They cover:
+- the metric and mask edge cases;
+- split separation, leakage, and random-split refusal;
+- model-selection leakage: a best-validation-loss or other non-final epoch is
+  refused when the held-out city is the checkpoint's validation side, and the
+  final epoch is accepted;
+- the sun band at and around 25° and 45°, shadow, water and combined
+  conditions;
+- CRS/transform/nodata preservation;
+- report rendering, including that an empty result renders no numbers;
+- the full synthetic pipeline;
+- a DFC2019-shaped run with a known 0.5 m error, and refused leaked or
+  best-epoch checkpoints;
+- the measured-report wording, and that a refused report doesn't claim it.
+
+The DFC2019-shaped tests use synthetic rasters and an injected predictor. The
+real checkpoint-inference path has since run on the 714 calibrated OMA tiles
+in the acceptance run above.
+
+The Phase 2 reference interface (`ReferenceSet`, JSON/CSV loading, scatter
+plot) is unchanged. No manually measured real references have been supplied.
 
 ### Phase 6 — DTM extraction / nDSM ⛔ CANCELLED
 

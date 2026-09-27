@@ -1,0 +1,89 @@
+# DepthWizard - Phase 5: the validation harness
+#
+# Shared and machine-independent. Commands:
+#
+#   # SYNTHETIC: Phase 4b products vs the Phase 0 fixture's specified truth
+#   python -m depthwizard.validation.run synthetic --config configs/phase5.yaml
+#
+#   # REAL-WORLD: Phase 4a calibrated AGL on DFC2019, geographically held out
+#   python -m depthwizard.validation.run dfc --config configs/phase5.yaml \
+#       --relative-config configs/phase3.local.yaml
+#
+# Strict loading: an unknown or misspelt key raises ConfigError. There is no
+# random-split option anywhere in this file, by design.
+
+run_id: phase5
+output_dir: data/outputs/phase5
+
+# delta < 1.25, 1.25^2, 1.25^3 (fractions of pixels with max(p/r, r/p) < t,
+# over pixels where prediction and reference are both > 0).
+delta_thresholds: [1.25, 1.5625, 1.953125]
+
+# The project's usable sun-elevation band, inclusive at both edges. The same
+# 25-45 deg gate as Phase 2 (depthwizard.physics.height.sun_band_status).
+sun_band:
+  min_deg: 25.0
+  max_deg: 45.0
+
+error_map:
+  # Written for invalid pixels. Never 0, which is a real error value.
+  nodata: -9999.0
+  # The FIGURE's colour scale spans +/- this percentile of |error|. Larger
+  # errors are drawn in the end colours, counted and their range printed; the
+  # raster is never clipped.
+  display_percentile: 99.0
+  # DFC2019: error figures for at most this many tiles (first in sorted
+  # tile-id order, never picked by accuracy). Rasters are written for all.
+  max_figures: 8
+
+synthetic:
+  # Written by: python -m depthwizard.surfaces.run synthetic --config configs/phase4.yaml
+  phase4b_report: data/outputs/phase4b/phase4b_report.json
+  # The Phase 0 scene the fixture was rendered from (checked against the
+  # fixture's truth sidecar; needed for the analytic terrain truth).
+  scene_config: configs/default.yaml
+  products: [agl, dsm]
+
+dfc:
+  # A held-out Phase 4a run (phase4a_report.json + per_tile.jsonl). The Phase 3
+  # checkpoint is the one THAT report names, so the evaluated field is exactly
+  # the one each tile's a, b were fitted to.
+  phase4a_dir: data/outputs/phase4a
+
+  # The geographic split this harness requires. It is checked against the
+  # split recorded INSIDE the checkpoint, and the run is refused if any
+  # held-out region was used for training.
+  #
+  # The shipped Phase 3 checkpoint (data/outputs/phase3/checkpoints/best.pt) was
+  # trained with split.mode per_city_scene, i.e. on BOTH cities. It fails this
+  # check and cannot be used for the held-out-city experiment.
+  #
+  # The completed experiment (city-held-out model evaluation with LiDAR-anchored
+  # per-tile metric calibration; NOT unseen-city zero-shot) used:
+  #   1. a Phase 3 checkpoint trained on JAX only, with OMA held out:
+  #        split: {mode: scene_prefix, val_scene_prefixes: [OMA]}
+  #      Downstream it uses the FINAL pre-set epoch, epoch_009.pt, never
+  #      best.pt: best.pt is selected by OMA validation loss, which would be
+  #      model-selection leakage, and this harness refuses it;
+  #   2. a JAX-only Phase 4a training-split ablation, whose frozen decisions
+  #      were recorded before the held-out OMA run (every threshold was kept);
+  #   3. a held-out Phase 4a run on OMA with that checkpoint.
+  # The exact commands, and the git-ignored local configs they use, are in the
+  # README: Phase 5 -> "Reproducing the JAX -> OMA experiment".
+  split:
+    region_key: city
+    train_regions: [JAX]
+    heldout_regions: [OMA]
+    rationale: >-
+      Held out: OMA. Phase 4a shadow calibration returns a, b almost only on OMA
+      tiles (see the Phase 4a report), so OMA is the only city that can yield
+      calibrated held-out tiles; JAX is therefore the training city.
+
+  cls_suffix: _CLS.tif
+  # DFC2019 CLS (ASPRS LAS) codes present in the real rasters:
+  # 2 ground, 5 high vegetation, 6 building, 9 water, 17 bridge deck, 65 unlabelled.
+  terrain_classes: [2]
+  building_classes: [6]
+  water_classes: [9]
+  # Phase 4a fit labels to evaluate (the UNIDENTIFIABLE ones return no a, b).
+  fit_classes: [identifiable_positive, statistically_weak, non_positive]
