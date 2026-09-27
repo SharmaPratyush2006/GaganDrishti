@@ -1,0 +1,111 @@
+# DepthWizard - Phase 4a: pixel-space metric calibration on DFC2019
+#
+# Shared and machine-independent. The DFC2019 root comes from the Phase 3
+# config; point at your local one on the command line:
+#
+#   python -m depthwizard.calibration.run dfc \
+#       --config configs/phase4.yaml --relative-config configs/phase3.local.yaml
+#   python -m depthwizard.calibration.run synthetic --config configs/phase4.yaml
+#
+# Strict loading: an unknown or misspelt key raises ConfigError.
+
+run_id: phase4a
+output_dir: data/outputs/phase4a
+relative_config: configs/phase3.yaml
+checkpoint: data/outputs/phase3/checkpoints/best.pt
+
+dataset:
+  cls_suffix: _CLS.tif
+  # ASPRS LAS code 6 = "building roof". Verified against the official DFC2019
+  # baseline code (pubgeo/dfc2019: track1/track1-metrics.py
+  # las_to_sequential_labels, and track1/unets/params.py LAS_LABEL_ROOF = 6).
+  # The real CLS rasters contain exactly {2, 5, 6, 9, 17, 65}.
+  building_class: 6
+  # Shadows only count where they fall on CLS ground (2). Otsu on the HSV value
+  # channel also flags dark tree canopy and water; on the tiles inspected it
+  # marked 45-80% of the tile before this restriction.
+  shadow_surface_classes: [2]
+  # UNVERIFIED -> null. No authoritative source gives the GSD of the
+  # 1024x1024 Track 1 tiles, and the sources disagree (see gsd_note). Every
+  # Phase 4a metric result is GSD-invariant; only theta in degrees and the
+  # 25-45 deg sun-band gate need it, and they are reported as not determinable.
+  gsd_m: null
+  gsd_note: >-
+    Unverified. US3D paper (Bosch et al., WACV 2019, arXiv:1811.08739): WorldView-3
+    panchromatic GSD "approximately 30cm". DFC2019 organisers (GRSS DFC2019 page,
+    IEEE DataPort): "approximately 35 cm", 500 m x 500 m geographic tiles.
+    Christie et al. 2021 (arXiv:2105.08229): US3D images are 2048x2048 px, so the
+    1024 px Track 1 files may be resampled. HTC-DC Net (arXiv:2309.16486) states
+    1.33 m for DFC19. The Track 1 images are unrectified image-plane tiles, so
+    ground pixel size also varies with each view's off-nadir angle.
+  crop_size: 512
+  split_side: val
+  max_pairs: null
+
+footprints:
+  min_area_px: 50
+  connectivity: 4
+  reject_edge_touching: true
+
+azimuth:
+  band_px: 8
+  step_deg: 1.0
+  min_building_px: 200
+  min_peak_to_median: 1.25
+
+measurement:
+  step_px: 0.5
+  # FROZEN from the TRAINING-only ablation (run ablation; 331 training images,
+  # 86 geographic tiles, 1,324 tiles). v1 used 4 px, chosen from held-out pass
+  # counts -- a procedure error, corrected here. With the merged-shadow check,
+  # 4 px vs 2 px was mixed (Spearman L~h 0.16 vs 0.14, MAD log k 0.32 vs 0.30,
+  # leave-refs-out MAE 2.80 vs 2.87 m): no material gain, so the validated
+  # Phase 2 default is kept.
+  gap_tolerance_px: 2.0
+  max_rays: 64
+  min_rays: 3
+  min_hit_fraction: 0.5
+  nominal_hit_fraction: 0.8
+  percentile: 50.0
+  max_edge_terminated_fraction: 0.5
+  # Majority of hit rays crossing another building's footprint -> the shadow
+  # is merged with a neighbour's and is dropped (same majority rule as edge
+  # truncation). It lowered leave-refs-out MAE in every training variant.
+  max_merged_fraction: 0.5
+
+reference:
+  primary_count: 3
+  min_count: 2
+  sensitivity_counts: [2, 3, 5]
+  min_area_px: 200
+  # 0 = isolation gate disabled (FROZEN from the training ablation): at 2 px
+  # with the merged-shadow check, isolation 10 vs 0 gave the same validity
+  # (Spearman 0.14 / 0.14, MAD log k 0.30 / 0.30, MAE 2.85 / 2.87 m) with 45 vs
+  # 85 calibratable training tiles. Contamination is left to merged_shadow.
+  isolation_px: 0
+  # median (FROZEN): always defined and robust to one bad reference. On
+  # training, inverse_variance had lower leave-refs-out MAE (2.63 vs 2.87 m)
+  # but is undefined whenever a reference has zero ray spread and leans on the
+  # empirical proxy weights; mean was worse than median everywhere.
+  k_estimator: median
+  min_solidity: 0.8
+  min_height_m: 3.0
+  min_valid_fraction: 0.9
+  min_shadow_zone_ground_fraction: 0.8
+  max_relative_spread: 0.5
+
+fit:
+  min_constraints: 5
+  # REDUCED-confidence constraints get this weight multiplier (NOMINAL = 1).
+  # A policy choice, not a measured quantity.
+  reduced_weight_factor: 0.5
+  max_condition: 1000000.0
+  ransac: true
+  ransac_threshold_sigma: 3.0
+  ransac_iterations: 500
+  ransac_seed: 20260927
+
+synthetic:
+  scene_config: configs/default.yaml
+  log_offset: 0.5
+  min_constraints: 4

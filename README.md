@@ -4,21 +4,26 @@
 
 Smart India Hackathon 2026 — problem statement **SIH26175**.
 
-> **Status: Phases 0–2 complete; Phase 3 (relative-height baseline) trained on
-> real DFC2019 data.** Shadow detection, shadow measurement and height
-> estimation are implemented and tested. The Phase 3 model has been trained on
-> the GPU and checked on held-out tiles, but its output is **relative and
-> unitless — not metres** — and it has **no accuracy figure**. There is **no
-> calibration, no DSM/DTM/nDSM and no viewer** yet, and **building footprints
-> are supplied inputs — nothing in this
-> repository detects buildings.** See the
-> [checklist](#implemented-vs-planned) for exactly what exists.
+> **Status: Phases 0–3 complete; Phase 4a (pixel-space metric calibration)
+> implemented, but on real DFC2019 its calibration is largely unidentifiable.**
+> Phase 3 was trained on real DFC2019 Track 1 and predicts **relative, unitless
+> above-ground height (AGL)**. Phase 4a converts it to metres per tile,
+> `AGL = a·exp(z_rel) + b`, anchored on building shadows, and scores it against
+> DFC2019 AGL on held-out tiles. On real imagery, though, the measured shadow
+> length barely tracks building height, so only 32 of 209 held-out tile fits
+> have an identifiable scale. See the
+> [Phase 4a section](#phase-4a--pixel-space-metric-calibration--implemented-real-data-calibration-largely-unidentifiable).
+> Building footprints come from the DFC2019 **CLS labels** (class 6); nothing
+> here *detects* buildings. There is **no georeferenced DSM, no COG export and
+> no viewer** yet (Phase 4b / Phase 7).
 >
-> **No real-world accuracy has been measured, and none is claimed anywhere in
-> this repository.** No reference measurements ship here. The only error figures
-> that exist are against the synthetic fixture, whose heights were *specified*
-> rather than measured, and every one of them is tagged `SYNTHETIC` in the code
-> that produces it.
+> **The real-world figures in this repository are the Phase 4a DFC2019
+> measurements, and each one carries its coverage.**
+> - The primary one is a shadow-measured building evaluation: 1,762 evaluated
+>   / 3,257 eligible / 20,558 total buildings, 99 % in Omaha.
+> - No Jacksonville performance is claimed.
+> - Figures against the synthetic fixture, whose heights were *specified*
+>   rather than measured, are tagged `SYNTHETIC`.
 
 ---
 
@@ -118,11 +123,11 @@ penumbra softening, and shadows confused with dark roofs, water or asphalt.
                  └──────┬───────┘
                         │  raw height estimates
                  ┌──────▼───────┐
-                 │ calibration  │  terrain, view angle, per-scene bias
+                 │ calibration  │  relative AGL -> metres: AGL = a·exp(z_rel) + b
                  └──────┬───────┘
-                        │  calibrated heights
+                        │  calibrated AGL (= nDSM)
                  ┌──────▼───────┐
-                 │   surfaces   │  DSM / DTM / nDSM rasters
+                 │   surfaces   │  DSM = terrain + AGL, COG   (Phase 4b, planned)
                  └──────┬───────┘
                         │  height products
                  ┌──────▼───────┐
@@ -141,8 +146,9 @@ The `shadows` package sits between `ingest` and `physics`: it turns pixels into
 a shadow mask, measures each **supplied** footprint's shadow along the anti-sun
 direction, and hands the length to `physics` for inversion.
 
-Of the above, `ingest`, `physics`, `shadows` and `validation` have an
-implementation. `calibration`, `surfaces` and `viewer` are empty placeholders
+Of the above, `ingest`, `physics`, `shadows`, `calibration` (Phase 4a, pixel
+space) and `validation` have an implementation; `relative` (Phase 3) produces
+the field `calibration` scales. `surfaces` and `viewer` are empty placeholders
 that exist so import paths stay stable from the first commit.
 
 ### Absolute vs relative mode
@@ -167,7 +173,9 @@ and it only becomes a height if you know the sun elevation. Without both,
 ```
 DepthWizard/
 ├── configs/
-│   └── default.yaml              # the scene, sun, paths and logging config
+│   ├── default.yaml              # the scene, sun, paths and logging config
+│   ├── phase3.yaml               # relative-height training (template)
+│   └── phase4.yaml               # Phase 4a calibration
 ├── data/
 │   ├── raw/                      # source imagery          (git-ignored)
 │   ├── processed/                # generated fixtures       (git-ignored)
@@ -197,8 +205,18 @@ DepthWizard/
 │   ├── validation/
 │   │   ├── evaluation.py         # reference interface, metrics where they exist
 │   │   └── plots.py              # predicted vs reference scatter
-│   ├── calibration/              # NOT IMPLEMENTED
-│   └── surfaces/                 # NOT IMPLEMENTED
+│   ├── relative/                 # Phase 3: relative AGL model
+│   ├── calibration/              # Phase 4a: pixel-space metric calibration
+│   │   ├── footprints.py         # DFC2019 CLS class 6 -> footprints
+│   │   ├── azimuth.py            # sun azimuth from shadow placement
+│   │   ├── shadow_anchor.py      # references, sun scale, shadow heights
+│   │   ├── fusion.py             # exp(z_rel), WLS a,b
+│   │   ├── ransac.py             # seeded robust affine fit
+│   │   ├── diagnostics.py        # error accounting, reports
+│   │   ├── config.py             # configs/phase4.yaml loader
+│   │   ├── ablation.py           # TRAINING-only threshold ablations, height census
+│   │   └── run.py                # DFC2019 run + SYNTHETIC control
+│   └── surfaces/                 # NOT IMPLEMENTED (Phase 4b)
 ├── tests/
 ├── viewer/                       # NOT IMPLEMENTED
 ├── pyproject.toml
@@ -437,7 +455,7 @@ Nothing substitutes a nominal value or a prior.
 
 > These are **synthetic** figures. The heights were specified when generating
 > the fixture, not measured. They test this implementation's geometry and say
-> **nothing** about real-world accuracy, which has not been measured.
+> **nothing** about real-world accuracy (see Phase 4a for the DFC2019 figures).
 
 Committed fixture — sun elevation 45°, azimuth 135°, GSD 0.5 m:
 
@@ -649,34 +667,444 @@ tall structures is compressed.
 - The output is **relative and unitless**. It is not metres, and each tile has
   its own unknown offset, so tiles are not stitched. Converting it to metres
   is Phase 4.
-- **No accuracy exists.** Losses and correlations above are not accuracy, and
-  no metric error has been measured.
+- Losses and correlations above are not accuracy. Phase 3 on its own has no
+  metric error; the first metric figures are Phase 4a's, after calibration.
 - The split holds out tiles, not cities. Generalisation to an unseen city is
   untested.
 - The unit tests still use small *synthetic* rasters and a toy CPU model; the
   real-data run above is a separate, manual verification.
 
-### Phase 4 — calibration & surface products ❌ NOT IMPLEMENTED
+### Phase 4a — pixel-space metric calibration 🟡 IMPLEMENTED; REAL-DATA CALIBRATION LARGELY UNIDENTIFIABLE
 
-- [ ] Relative → metric calibration (shadow geometry, SRTM / CartoDEM)
-- [ ] Terrain slope and off-nadir view corrections
-- [ ] Per-scene bias calibration
-- [ ] DSM generation
-- [ ] DTM extraction
-- [ ] nDSM (normalised height surface)
-- [ ] External elevation sources (SRTM / CartoDEM)
+Code in `depthwizard.calibration`; config `configs/phase4.yaml`. Commands:
 
-### Phase 5 — validation 🟡 INTERFACE IMPLEMENTED, NO REAL DATA
+```bash
+# TRAINING-only threshold ablations + per-city height census (no model needed)
+python -m depthwizard.calibration.run ablation --config configs/phase4.yaml \
+    --relative-config configs/phase3.local.yaml
+# Frozen pipeline on training tiles (diagnostics only; Phase 3 was trained on them)
+python -m depthwizard.calibration.run dfc --split-side train --views-per-scene 4 \
+    --output-dir data/outputs/phase4a_train_diagnostics --config configs/phase4.yaml \
+    --relative-config configs/phase3.local.yaml
+# Final held-out evaluation (run once, after the method was frozen)
+python -m depthwizard.calibration.run dfc --config configs/phase4.yaml \
+    --relative-config configs/phase3.local.yaml
+# SYNTHETIC control
+python -m depthwizard.calibration.run synthetic --config configs/phase4.yaml
+```
+
+Outputs are git-ignored and live under `data/outputs/`:
+
+| output | contents |
+| --- | --- |
+| `phase4a/phase4a_report.json` | report grouped by JAX / OMA / combined |
+| `phase4a/per_tile.jsonl` | every tile, reference, fit and rejection, with additive error sums |
+| `phase4a/figures/` | diagnostic figures |
+| `phase4a_training_ablation/` | training ablation |
+| `phase4a_train_diagnostics/` | training diagnostic run |
+| `phase4a_v1_ed7efb8/` | the superseded v1 run, kept for provenance |
+
+**Reading guide.** The results below come in four clearly separated kinds:
+**TRAINING diagnostics** (where every threshold was chosen), the **HELD-OUT
+evaluation** (run once, after the method was frozen), the **ORACLE** control
+(diagnostic only), and the **SYNTHETIC** validation.
+
+#### Summary
+
+On real DFC2019, the shadow-length measurement **barely tracks building height**.
+This is measured on training tiles:
+
+- the median within-tile Spearman correlation of shadow length L with true
+  height h is 0.10–0.20, whatever the gap tolerance, isolation policy or shadow
+  threshold;
+- 10–20 m buildings have shadows of the tile-median length (ratio ≈ 1.0), even
+  though they are about 2× the tile-median height.
+
+The diagnostic figures show why. The Phase 2 classical mask, even restricted to
+CLS ground, marks most dark asphalt (streets, parking) as shadow, so rays
+measure pavement extent. Also, in dense downtown JAX the tall buildings touch
+the 512 px tile edge or cast shadows longer than the tile.
+
+As a result, the per-tile scale `a` is **mostly not identifiable**: only 32 of
+209 attempted held-out fits are significantly positive. The Phase 3 relative
+field itself does carry height range. With true heights (the oracle), `a`
+becomes significantly positive on tall-building tiles, so the dominant defect
+is the shadow anchoring, not Phase 3. Low-rise geometry is a secondary limit.
+
+**The previous v1 figure of 3.85 m dense MAE is not a valid height-model
+result.** On most tiles `a` is statistically indistinguishable from zero, so
+`a·exp(z_rel) + b` behaves close to a per-tile constant. The same caveat
+applies to the v2 dense numbers below. They are reported because the protocol
+requires them, not as a headline.
+
+#### Method
+
+Phase 3 predicts `z_rel ≈ log(AGL + 1) + c` (above-ground height, per-tile
+offset `c`), so `AGL = a·exp(z_rel) + b`, with one `(a, b)` per 512 px tile.
+Terrain is not a scale anchor. It is additive later, `DSM = T + AGL` (Phase 4b).
+
+The sun is fixed **before** `a, b`, never jointly, because that system is
+scale-degenerate. Per tile:
+
+1. **Footprints**: CLS class 6 → 4-connected components → at least 50 px and
+   not touching the tile edge. Class 6 ("building roof", ASPRS LAS) is verified
+   against the official DFC2019 baseline code (`pubgeo/dfc2019`
+   `track1-metrics.py`, `unets/params.py`), and the real CLS rasters contain
+   exactly {2, 5, 6, 9, 17, 65}.
+2. **Shadow mask**: the Phase 2 classical detector (image Otsu), unchanged,
+   restricted to CLS ground (2).
+3. **Sun azimuth**: footprint-adjacent directional shadow occupancy. It resolves
+   the 180° ambiguity that PCA, gradient-histogram and Radon methods leave. The
+   scan is over *sun* azimuths through the anti-sun function. Resolution bound
+   is `atan(0.5/8)` = 3.58°.
+4. **Shadow lengths**: Phase 2 `measure_shadow_lengths`, unchanged. **v2**:
+   `gap_tolerance_px` = **2**, plus a new **merged-shadow** rule. If more than
+   half the hit rays cross another building's footprint, the ray skipped over a
+   neighbour and continued in its shadow, so the measurement is dropped. This is
+   the same majority rule as edge truncation.
+5. **Sun scale**: 2–3 automatically selected reference buildings.
+   `metres_per_shadow_px = median(h_ref / L_px)` = `GSD·tanθ`.
+   - Gates: NOMINAL; at least 200 px; solidity ≥ 0.8; ≥ 90 % valid AGL; at
+     least 3 m; relative ray spread ≤ 0.5; shadow zone ≥ 80 % ground.
+   - **v2**: the isolation gate is **off** (`isolation_px: 0`); contamination is
+     handled by the merged-shadow rule.
+   - Ranking is by relative spread, then area. It never uses AGL height, and a
+     test checks this.
+   - Each reference's ID and r̄ are recorded, and references are excluded from
+     every fit and metric.
+6. **Shadow heights** `hᵢ = k·Lᵢ,px`. FAILED constraints are excluded; REDUCED
+   ones get weight × 0.5; NOMINAL get full weight. The weight is
+   `wᵢ = 1/dhᵢ²` with `dh = k·ray_length_spread_px`. This is an **EMPIRICAL
+   PROXY, not a measurement uncertainty**. No default `dh` is ever invented.
+7. **Fit**: seeded RANSAC (inlier if |residual| ≤ 3·dhᵢ), then WLS. Every fit is
+   **labelled**, never gated on `a > 0`:
+
+   | label | meaning |
+   | --- | --- |
+   | `identifiable_positive` | a > 0 and a/SE(a) ≥ 2 (the conventional 95 % level, not tuned) |
+   | `statistically_weak` | a > 0 but a/SE(a) < 2 |
+   | `non_positive` | a ≤ 0 |
+   | UNIDENTIFIABLE `insufficient_constraints` | fewer than 5 constraints; no `a, b` returned |
+   | UNIDENTIFIABLE `numerically_unstable` | identical r̄ or condition > 10⁶; no `a, b` returned |
+
+   SE(a) is the WLS standard error scaled by √(reduced χ²), because the proxy
+   weights are only relative. Every fit reports the number of constraints, the
+   weighted r̄ variance, the condition number, a, b, SE(a), SE(b), a/SE and the
+   weighted residual.
+
+**GSD** stays unverified (sources: ~30 cm, ~35 cm, 2048 px source tiles,
+1.33 m), so `gsd_m: null`. Every height is GSD-invariant, and **tanθ and θ are
+not determinable**. Even with a GSD, θ would only be an effective elevation.
+
+#### Tuning decisions — TRAINING data only
+
+All choices come from `run ablation`, which covers:
+- 331 training images: 4 views per geographic tile, evenly spaced in sorted
+  order;
+- 86 geographic tiles (42 JAX, 44 OMA), giving 1,324 tiles of 512 px;
+- quality criteria from training AGL:
+  - within-tile Spearman of L vs h;
+  - MAD of log(h/L);
+  - leave-references-out error of `h = k·L`.
+
+The held-out split was not used for any choice.
+
+**v1 procedure error, corrected here:** v1 used a 4 px gap tolerance chosen
+from held-out pass counts.
+
+Comparison of variants (combined cities, image Otsu, merged-shadow check on
+unless noted):
+
+| variant | measured OK | tiles ≥ 2 refs | Spearman L~h | MAD log k | LRO MAE / MedAE (m) |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| gap 2, isolation 10 | 54 % | 45 | 0.14 | 0.30 | 2.85 / 1.99 |
+| **gap 2, isolation off (chosen)** | 54 % | **85** | 0.14 | 0.30 | 2.87 / 1.93 |
+| gap 2, isolation off, merged check off | 54 % | 85 | 0.15 | 0.31 | 3.14 / 2.00 |
+| gap 4, isolation off | 67 % | 95 | 0.16 | 0.32 | 2.80 / 1.91 |
+| gap 6, isolation off | 73 % | 91 | 0.15 | 0.31 | 2.92 / 2.06 |
+| ground-only Otsu, gap 2, isolation off | 54 % | 89 | 0.14 | 0.31 | 2.83 / 1.91 |
+
+- **Gap 2 px.** 4 px vs 2 px was mixed: slightly higher Spearman and lower
+  MAE, but higher k dispersion, all within noise. The pre-stated rule was to
+  keep the validated Phase 2 default unless training showed a material gain.
+  More pass-throughs are not better measurements: with the merged check *off*,
+  larger gaps clearly degrade validity (Spearman 0.15 → 0.14 → 0.10 for
+  2 / 4 / 6 px).
+- **Isolation off.** Same validity, 1.9× the calibratable training tiles
+  (JAX: 3 → 16). The isolation hypothesis for JAX was only a secondary cause:
+  JAX's primary failure is the shadow measurement itself (next section).
+  Directional isolation (only neighbours in the shadow path) rejected *more*
+  than the 10 px rule and was dropped.
+- **Merged-shadow check on.** It lowered leave-references-out MAE in every
+  variant (3.14 → 2.87 m at gap 2).
+- **k = median.** Inverse-variance had lower training MAE (2.63 vs 2.87 m) but
+  is undefined when a reference has zero ray spread and depends on the proxy
+  weights. The mean was worse than the median everywhere.
+- **Shadow threshold unchanged.** Ground-only Otsu gave no validity gain.
+- **Reference selection unchanged.** References only set k; their r̄ never
+  enters the `a, b` fit. The diagnosis points to L–h validity, not reference
+  choice.
+
+#### Why Jacksonville fails, and other diagnostics
+
+**Held-out tile funnel, by city:**
+
+| stage | JAX | OMA |
+| --- | ---: | ---: |
+| 512 px tiles | 976 | 1,484 |
+| tiles with kept footprints | 816 | 932 |
+| sun azimuth recovered | 772 | 1,003 |
+| reached reference selection | 667 | 849 |
+| ≥ 2 valid references (sun calibrated) | **4** | 205 |
+| a,b fit returned | 3 | 161 |
+| fit `identifiable_positive` | **0** | 32 |
+
+**JAX vs OMA, held-out:**
+
+| diagnostic | JAX | OMA |
+| --- | ---: | ---: |
+| Phase 2 measurements succeeding | 35 % (2,576 / 7,342) | 63 % (6,734 / 10,718) |
+| reference-candidate rejections: unusable shadow | 5,013 | 4,343 |
+| reference-candidate rejections: not NOMINAL | 1,339 | 3,060 |
+| reference-candidate rejections: ray spread | 234 | 2,016 |
+| components below 50 px (speckle) | 73,479 of 87,053 | 14,136 of 29,484 |
+
+- The JAX speckle holds only ~1 % of building pixels, so no buildings are lost
+  to the min-area filter.
+- JAX's primary blocker is the **shadow measurement**. Most rays find no
+  continuous shadow before the gap limit.
+- The JAX tall buildings are the downtown towers. They touch the tile edges,
+  or their shadows are longer than the tile and fall on other buildings (see
+  `figures/JAX_tallest__*.png`), so **none of the 28 held-out ≥ 20 m tiles can
+  be calibrated**.
+
+**Height census** (CLS components of at least 50 px, median AGL, one view per
+geographic tile; description only):
+
+| | buildings | median | mean | p75 | p90 | p95 | max | > 10 m | > 20 m | > 30 m |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| train JAX | 2,167 | 4.2 | 5.2 | 6.0 | 8.1 | 9.8 | 127.0 | 106 | 25 | 13 |
+| train OMA | 1,618 | 4.8 | 5.3 | 6.0 | 7.4 | 9.0 | 79.5 | 57 | 8 | 1 |
+| held-out JAX | 584 | 4.0 | 4.9 | 5.6 | 7.4 | 9.5 | 53.0 | 28 | 8 | 4 |
+| held-out OMA | 342 | 4.3 | 4.9 | 5.8 | 7.4 | 8.2 | 19.1 | 10 | 0 | 0 |
+
+The buildings that actually became eligible references are all low-rise
+(held-out: 891 eligible, median 4.35 m, max 8.2 m, none above 10 m). Only JAX
+has the tall buildings, and none of them survive into calibration.
+
+#### Tall-building identifiability test
+
+Tile height group is the maximum footprint AGL. It is a diagnostic label only.
+
+| group | set | shadow fit: ident. / attempted | shadow median a/SE | oracle fit: ident. / returned | oracle median a/SE |
+| --- | --- | ---: | ---: | ---: | ---: |
+| 0–5 m | held-out | 6 / 37 | 0.75 | 5 / 34 | 0.21 |
+| 5–10 m | held-out | 20 / 136 | 0.70 | 37 / 96 | 1.47 |
+| 10–20 m | held-out | 6 / 36 | 0.63 | **17 / 34** | **2.03** |
+| ≥ 20 m | held-out | 0 calibrated (27 insufficient refs, 1 no azimuth) | — | — | — |
+| 10–20 m | training* | 1 / 6 | −0.19 | 4 / 6 | 2.87 |
+
+\*The training row is diagnostic: Phase 3 was trained on those tiles.
+
+**Answer:**
+- **Yes for the Phase 3 field.** With genuine height range, the oracle's `a`
+  becomes meaningfully positive and identifiable: median a/SE rises from 0.21
+  to 1.47 to 2.03 as the tile height group rises.
+- **No for the shadow calibration.** Shadow-fit a/SE stays around 0.6–0.75 in
+  every group.
+- So the original problem is **primarily the shadow measurement (Phase 4)**,
+  with low-rise geometry as a secondary factor.
+
+#### HELD-OUT evaluation (method frozen before this run)
+
+Split: the Phase 3 validation split, unchanged (`per_city_scene`, seed
+20260918, tile-disjoint from training). It has 615 images and 22 geographic
+tiles (11 JAX, 11 OMA), giving 2,460 tiles of 512 px (976 JAX, 1,484 OMA).
+
+**Tile status by city:**
+
+| status | JAX | OMA | combined |
+| --- | ---: | ---: | ---: |
+| no buildings | 160 | 552 | 712 |
+| sun azimuth not recoverable | 149 | 83 | 232 |
+| < 2 valid references | 663 | 644 | 1,307 |
+| sun calibrated, fit UNIDENTIFIABLE (insufficient constraints) | 1 | 44 | 45 |
+| fit returned | **3** (2 geographic tiles, 3 images) | **161** (6 geographic tiles, 117 images) | **164** |
+
+**Identifiability of the fits returned** (combined):
+
+| label | count |
+| --- | ---: |
+| `identifiable_positive` | **32** (JAX 0, OMA 32) |
+| `statistically_weak` | 83 |
+| `non_positive` | 49 |
+| UNIDENTIFIABLE, insufficient constraints | 45 |
+| UNIDENTIFIABLE, numerically unstable | 0 |
+
+- Identifiable fraction: 32 / 209 attempted = **15 %** (32 / 164 returned =
+  20 %).
+- a: median 0.41 (p10–p90 −0.60 to 1.92).
+- SE(a): median 0.59 (p10–p90 0.24 to 1.71).
+- a/SE: median 0.68.
+- For comparison, the oracle has 59 identifiable, 73 weak and 32 non-positive
+  fits (median a/SE 1.43).
+
+**References and buildings:**
+- 506 calibration buildings (JAX 8, OMA 498).
+- Evaluation buildings, shown as evaluated / eligible / total kept footprints:
+
+| | evaluated | eligible | total kept footprints |
+| --- | ---: | ---: | ---: |
+| combined | 1,762 | 3,257 | 20,558 |
+| JAX | 24 | 62 | 8,888 |
+| OMA | 1,738 | 3,195 | 11,670 |
+
+- Rejected evaluation buildings: 1,495 (1,388 FAILED, 66 edge-truncated, 37
+  merged shadow, 4 with no proxy).
+
+**Primary available metric — "shadow-measured building evaluation on
+successfully sun-calibrated held-out tiles"** (shadow `hᵢ` vs median DFC2019
+AGL; no `a, b` involved):
+
+| | evaluated / eligible / total | MAE (m) | RMSE (m) | bias (m) | Spearman h_shadow~h |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| combined | 1,762 / 3,257 / 20,558 | **2.63** | **4.65** | +0.53 | 0.25 |
+| JAX | 24 / 62 / 8,888 | 4.79 | 10.16 | +2.94 | −0.13 |
+| OMA | 1,738 / 3,195 / 11,670 | 2.60 | 4.53 | +0.50 | 0.26 |
+
+By true height (combined, MAE / RMSE in m):
+
+| true height | buildings | MAE / RMSE |
+| --- | ---: | ---: |
+| 0–5 m | 1,384 | 2.50 / 4.76 |
+| 5–10 m | 363 | 3.04 / 4.24 |
+| 10–20 m | 15 | 4.44 / 4.72 |
+| ≥ 20 m | 0 | not yet measured |
+
+Coverage limits:
+- 99 % of these buildings are Omaha.
+- They are 9 % of all kept footprints.
+- Almost all are under 10 m tall.
+- The JAX row rests on 24 buildings from 3 tiles, too few to describe JAX.
+
+**Dense AGL, `a·exp(z_rel) + b` vs DFC2019 AGL** (reference pixels excluded).
+This is *not* a valid height-model result; see the summary.
+
+| | tiles | building MAE / RMSE | ground MAE / RMSE | all MAE / RMSE |
+| --- | ---: | ---: | ---: | ---: |
+| combined | 164 | 3.08 / 4.50 (4.59 M px) | 3.85 / 5.46 (37.8 M px) | 3.77 / 5.37 (42.4 M px) |
+| JAX | 3 | 3.93 / 4.86 | 3.28 / 4.58 | 3.41 / 4.64 |
+| OMA | 161 | 3.05 / 4.48 | 3.86 / 5.48 | 3.77 / 5.38 |
+| combined, `identifiable_positive` fits only | 32 | 2.80 / 4.00 | 3.20 / 4.60 | 3.16 / 4.54 |
+| combined, `statistically_weak` | 83 | 2.94 / 4.16 | 3.16 / 4.36 | 3.14 / 4.34 |
+| combined, `non_positive` | 49 | 3.53 / 5.33 | 5.43 / 7.32 | 5.23 / 7.14 |
+
+The identifiable subset is **not** clearly better than the weak one, so the
+dense error is mostly per-tile offset error, not height structure.
+
+Without RANSAC the same fits give 4.81 / 9.69 m (all pixels, combined). One
+JAX tile's WLS fit is wild (JAX all-pixel 28.2 / 52.3 m), so RANSAC matters.
+
+**ORACLE control — Phase 3 vs Phase 4 error decomposition** (diagnostic, NOT
+deployable; the same 164 tiles, MAE / RMSE in m):
+
+| pixels | Phase 3 + oracle a,b | Phase 3 + shadow a,b | calibration gap |
+| --- | ---: | ---: | ---: |
+| building | 1.72 / 2.71 | 3.08 / 4.50 | +1.36 / +1.79 |
+| ground | 3.12 / 3.58 | 3.85 / 5.46 | +0.73 / +1.88 |
+| all | 2.97 / 3.50 | 3.77 / 5.37 | +0.80 / +1.87 |
+
+- On building pixels, the Phase 4 shadow calibration roughly doubles the error
+  that remains with the oracle.
+- On ground pixels, most of the error is already in Phase 3 under a per-tile
+  affine map: the oracle itself has 3.12 m MAE, because a line through the
+  buildings extrapolates poorly to the ground.
+
+**Reference-count sensitivity** (combined, all pixels, MAE / RMSE in m):
+
+| references | tiles fitted (without enough references) | own tiles | common 12 tiles* |
+| --- | ---: | ---: | ---: |
+| 2 | 164 (0) | 3.82 / 5.44 | 2.93 / 3.57 |
+| 3 | 67 (97) | 3.21 / 4.48 | 3.00 / 3.74 |
+| 5 | 12 (137; 15 fits failed) | 2.52 / 3.36 | 2.52 / 3.36 |
+
+\*On the 12 tiles where all three counts were fitted, the top-5 union of
+references is excluded for all counts. More references did not consistently
+reduce error.
+
+**Uncertainty forms:**
+- Explicit `dh`: not measurable on DFC2019. None exists, so 209 of 209 fits are
+  UNIDENTIFIABLE.
+- Ray-spread proxy: all results above.
+
+**v1 → v2 on the same held-out tiles:**
+- Calibrated tiles went from 125 (JAX 0) to 164 (JAX 3).
+- The dense figures are not comparable as a model result, for the
+  identifiability reason above.
+
+#### SYNTHETIC validation (specified, not measured, heights)
+
+The Phase 0 fixture (sun 45° / 135°, GSD 0.5 m) is run with the **true** sun
+elevation. The relative field is constructed as `z = log(AGL + 1) + 0.5`, so
+the true values are a = 0.6065 and b = −1.
+
+| check | result |
+| --- | --- |
+| azimuth | 135.0° recovered (error 0°) |
+| azimuth sweep | 45 → 45°, 90 → 90°, 200 → 201°, 290 → 291° (bound 3.58°) |
+| recovered a | 0.6124 |
+| recovered b | −1.329 |
+| fit label | `identifiable_positive` (a/SE = 113) |
+| per-building errors | 0.30 / 0.02 / 0.25 / 0.34 m (the Phase 2 grid quantisation) |
+| dense, building / ground | MAE 0.16 m / 0.32 m |
+| ray-spread proxy | every spread is 0, so the fit is UNIDENTIFIABLE (insufficient constraints) |
+
+The machinery is correct when shadows are clean and the metadata is known. The
+real-data failure is a measurement-validity problem, not a solver bug.
+
+#### Unresolved
+
+- **Shadow measurement validity on DFC2019.** L does not track h. The classical
+  mask includes pavement, and the unrectified views add layover. Fixing this
+  needs a better shadow detector or geometry. That is new methodology and is
+  not attempted here.
+- **Tall buildings can't be used.** Tiles at 20 m and above are uncalibratable
+  at 512 px (edge contact and long shadows). A larger calibration unit could
+  help, but it conflicts with the per-tile Phase 3 offset.
+- **Jacksonville is effectively unmeasured.** 3 tiles, 24 buildings, 0
+  identifiable fits. No JAX performance is claimed.
+- **tanθ / θ:** not determinable (GSD unverified).
+- **DFC2019 sun-azimuth accuracy:** not measurable (no metadata).
+- **Explicit dh:** unavailable for DFC2019.
+- **Buildings ≥ 20 m on held-out tiles:** not yet measured.
+
+### Phase 4b — georeferenced DSM ❌ NOT IMPLEMENTED (specification only)
+
+Planned: DEM loading (SRTM / CartoDEM), CRS and overlap validation,
+reprojection and resampling, additive terrain fusion `DSM = T + a·r + b`, COG
+GeoTIFF writing with CRS and geotransform preserved, and verification on the
+synthetic fixture. Programmatic COG checks come before any QGIS check. The
+real georeferenced path is **NOT YET VERIFIED**. No DEM has been downloaded.
+
+### Phase 5 — validation 🟡 INTERFACE IMPLEMENTED
 
 - [x] Reference-data interface (`ReferenceSet`, JSON/CSV loading), requiring a
       stated source on every measurement
 - [x] Scoring against the synthetic fixture's specified heights, tagged
       `SYNTHETIC` wherever it is reported
 - [x] Error reporting and scatter plot, both absent where references are
-- [ ] Scoring against real reference DSM / lidar *(**no real reference data has
-      been supplied to this repository**, so no real-world accuracy exists)*
+- [ ] Manually measured real references through this interface *(none
+      supplied; the real-world figures that exist are Phase 4a's, scored
+      against DFC2019 lidar AGL)*
 
-### Phase 6 — viewer ❌ NOT IMPLEMENTED
+### Phase 6 — DTM extraction / nDSM ⛔ CANCELLED
+
+Phase 3 predicts AGL, and **AGL is the nDSM**. There is no DTM extraction
+(morphological, cloth, TIN) and no `DSM − DTM` step. The calibrated AGL field
+is the above-ground product. The eventual DSM is `DEM + calibrated AGL`
+(Phase 4b), and click-to-measure will read the calibrated AGL directly.
+
+### Phase 7 — viewer ❌ NOT IMPLEMENTED
 
 - [ ] FastAPI service
 - [ ] Web map viewer and per-building inspection (Three.js)
