@@ -17,6 +17,9 @@ Smart India Hackathon 2026 — problem statement **SIH26175**.
 > here *detects* buildings. **Phase 4b** (georeferenced DSM = DEM + calibrated
 > AGL, exported as COG) is implemented and validated on the **synthetic**
 > fixture only; the real-data georeferenced path is **NOT YET VERIFIED**.
+> **Phase 6** (DTM and nDSM = DSM − DTM, derived from a DSM alone) is
+> **implemented, synthetic only**. Its real-world DTM and nDSM accuracy is
+> **not yet measured** (see [Phase 6](#phase-6--dtm-and-ndsm-from-a-dsm--implemented-synthetic-only)).
 > **Phase 5** (validation harness) is implemented. It has been run as a
 > **city-held-out model evaluation with LiDAR-anchored per-tile metric
 > calibration**: the model was trained on Jacksonville (JAX) only and evaluated
@@ -137,9 +140,10 @@ penumbra softening, and shadows confused with dark roofs, water or asphalt.
                  ┌──────▼───────┐
                  │ calibration  │  relative AGL -> metres: AGL = a·exp(z_rel) + b
                  └──────┬───────┘
-                        │  calibrated AGL (= nDSM)
+                        │  calibrated AGL (model-derived)
                  ┌──────▼───────┐
-                 │   surfaces   │  DSM = terrain + AGL, COG   (Phase 4b, synthetic only)
+                 │   surfaces   │  DSM = terrain + AGL, COG           (Phase 4b, synthetic only)
+                 │              │  DSM -> ground -> DTM -> nDSM, COG  (Phase 6, synthetic only)
                  └──────┬───────┘
                         │  height products
                  ┌──────▼───────┐
@@ -150,6 +154,14 @@ penumbra softening, and shadows confused with dark roofs, water or asphalt.
                  │    viewer    │  web inspection UI
                  └──────────────┘
 ```
+
+Two above-ground height products exist, and they are kept distinct:
+- **AGL** (Phase 3/4a) is **model-derived**: the Phase 3 relative field,
+  calibrated to metres by Phase 4a as `a·exp(z_rel) + b`. It is the pipeline's
+  own above-ground product, and Phase 4b adds it to terrain to form a DSM.
+- **nDSM** (Phase 6) is **DSM-derived**: `nDSM = DSM − DTM`, where the DTM is
+  inferred from the DSM's surface shape alone. Phase 6 reads no AGL, DEM or
+  label, so it is an independent product, not a re-expression of the AGL.
 
 Cross-cutting, used by every stage: `config.py` (YAML + dataclasses),
 `logging_setup.py` (structured logging) and `mode.py` (absolute vs relative).
@@ -188,7 +200,8 @@ DepthWizard/
 │   ├── default.yaml              # the scene, sun, paths and logging config
 │   ├── phase3.yaml               # relative-height training (template)
 │   ├── phase4.yaml               # Phase 4a calibration
-│   └── phase5.yaml               # Phase 5 validation harness
+│   ├── phase5.yaml               # Phase 5 validation harness
+│   └── phase6.yaml               # Phase 6 ground filter, DTM / nDSM
 ├── data/
 │   ├── raw/                      # source imagery          (git-ignored)
 │   ├── processed/                # generated fixtures       (git-ignored)
@@ -238,9 +251,13 @@ DepthWizard/
 │   │   ├── ablation.py           # TRAINING-only threshold ablations, height census
 │   │   ├── run.py                # DFC2019 run + SYNTHETIC control
 │   │   └── terrain.py            # Phase 4b: DEM -> image grid (reproject, validate)
-│   └── surfaces/                 # Phase 4b: DSM = T + a*exp(z_rel) + b
-│       ├── dsm.py                # AGL, DSM fusion, nodata propagation
-│       └── run.py                # SYNTHETIC DSM export + COG validation
+│   └── surfaces/                 # Phase 4b DSM; Phase 6 DTM / nDSM
+│       ├── dsm.py                # Phase 4b: AGL, DSM fusion, nodata propagation
+│       ├── run.py                # Phase 4b: SYNTHETIC DSM export + COG validation
+│       ├── ground.py             # Phase 6: progressive morphological ground filter
+│       ├── dtm.py                # Phase 6: TIN re-admission, DTM, nDSM = DSM - DTM
+│       ├── phase6.py             # Phase 6: export, height_at, SYNTHETIC acceptance CLI
+│       └── phase6_config.py      # Phase 6: configs/phase6.yaml loader
 ├── tests/
 ├── viewer/                       # NOT IMPLEMENTED
 ├── pyproject.toml
@@ -1119,7 +1136,8 @@ DSM(x) = T(x) + AGL(x) = T(x) + a·exp(z_rel(x)) + b
 - **T** is terrain from a DEM reprojected onto the image grid. The DEM is
   **additive terrain only**: it is never a scale anchor for the relative
   field, and no DTM is subtracted.
-- **Phase 6 remains cancelled**, because Phase 3 already predicts AGL (= nDSM).
+- The DSM-derived DTM and nDSM are a separate, independent product:
+  [Phase 6](#phase-6--dtm-and-ndsm-from-a-dsm--implemented-synthetic-only).
 
 ```bash
 python -m depthwizard.surfaces.run synthetic --config configs/phase4.yaml
@@ -1723,12 +1741,210 @@ in the acceptance run above.
 The Phase 2 reference interface (`ReferenceSet`, JSON/CSV loading, scatter
 plot) is unchanged. No manually measured real references have been supplied.
 
-### Phase 6 — DTM extraction / nDSM ⛔ CANCELLED
+### Phase 6 — DTM and nDSM from a DSM ✅ IMPLEMENTED, SYNTHETIC ONLY
 
-Phase 3 predicts AGL, and **AGL is the nDSM**. There is no DTM extraction
-(morphological, cloth, TIN) and no `DSM − DTM` step. The calibrated AGL field
-is the above-ground product. The eventual DSM is `DEM + calibrated AGL`
-(Phase 4b), and click-to-measure will read the calibrated AGL directly.
+> **Phase 6 is implemented and validated on the synthetic georeferenced
+> fixture only.** That fixture's terrain and building heights were
+> *specified* when it was generated, not measured. **Real-world DTM and nDSM
+> accuracy is not yet measured.** DFC2019 Track 1 provides no DSM, no DTM, no
+> DEM and no CRS, so it offers Phase 6 neither an input nor ground truth.
+
+Phase 6 is an **independent, DSM-only** product. It reads a DSM and nothing
+else: no Phase 3/4a AGL, no DEM, no labels. It infers the ground from the
+DSM's surface shape, interpolates the terrain under objects (the DTM), and
+reports object height above that ground (the nDSM). The pipeline's own
+above-ground product remains the Phase 3/4a calibrated AGL.
+
+```
+DSM --ground.py--> ground mask --dtm.py--> DTM --> nDSM = DSM − DTM
+```
+
+```bash
+# Phase 6 reads the Phase 4b synthetic DSMs, so run Phase 4b first:
+python -m depthwizard.surfaces.run synthetic --config configs/phase4.yaml
+python -m depthwizard.surfaces.phase6 synthetic --config configs/phase6.yaml
+```
+
+The CLI exits 0 when the acceptance passes, 1 when it fails, and 2 on a
+missing or inconsistent input.
+
+#### Ground extraction: progressive morphological filter
+
+`surfaces/ground.py`, `MorphologicalGroundExtractor`, after Zhang et al.
+(2003, IEEE TGRS 41(4)):
+- A grey **opening** with a flat square window removes every raised object the
+  window cannot fit inside. Windows grow progressively: 3, 5, 9, 17, 33, … px,
+  then a final window.
+- The final window is the smallest odd pixel count **strictly larger** than
+  `max_building_extent_m`, so the structuring element is larger than the
+  largest building footprint. There is no default: the extent must be stated.
+- A pixel is non-ground if an opening lowers it by more than
+  `dh_k = min_object_height_m + max_terrain_slope · w_k`, with the window `w_k`
+  in metres.
+- Parameters are in metres and converted with the raster's own GSD. Only
+  north-up, square pixels are accepted.
+
+**The threshold is this project's implemented formulation, not Zhang's
+exactly.** Zhang et al. scale the slope term by the window *increment*,
+`s · (w_k − w_{k−1})`, and cap the threshold at a maximum. Here the slope term
+uses the full window width and there is no cap, so the threshold grows with the
+window: 2 + 0.05 × 40.5 = 4.03 m at the fixture's final window. This is
+documented as-is, not redesigned. Known limitations:
+- A building is only removed at the first window wider than it, and only if it
+  is taller than the threshold there. A wide, low building can therefore be
+  kept as ground: with the fixture parameters, a 40 m wide, 3.5 m tall building
+  would be (untested).
+- A building larger than `max_building_extent_m` survives the opening and is
+  kept as ground, so it is invisible in the nDSM (tested, as a documented
+  failure mode).
+- Borders use reflection. A building touching the border is reflected into one
+  twice as deep, so it is only removed if the window exceeds twice its extent
+  perpendicular to that border.
+- Invalid pixels are filled with their nearest valid value for filtering only,
+  and are never reported as ground. A nodata hole next to a building takes roof
+  values and enlarges the object (untested).
+- Anything raised above the threshold is non-ground: trees, bridges, vehicles.
+  This is not a building detector.
+
+#### TIN refinement: simple re-admission
+
+`surfaces/dtm.py`, `interpolate_dtm`. **This is a simple re-admission
+approach. It is NOT Axelsson progressive TIN densification (no seed minima,
+no angle or distance insertion criteria), and NOT cloth simulation.**
+- A Delaunay TIN is built over the ground pixels. Every non-ground pixel within
+  `min_object_height_m` of the TIN is re-admitted as ground.
+- This repeats until nothing changes, or for at most
+  `tin_refinement_max_iterations` passes (5). It only re-admits pixels; it
+  never removes ground.
+- It recovers terrain the filter flagged wrongly: a test shows it restoring a
+  natural 8 m hill the opening had cut off, while an 8 m building stays
+  non-ground.
+
+Limitations:
+- The criterion is vertical distance only, with no angle test. It can
+  therefore climb gently rising non-ground objects, such as ramps, embankments,
+  low-eave pitched roofs and vegetation edges, by up to 2 m per pass (untested).
+- It cannot fix the opposite error: a building kept as ground stays ground.
+- Every ground pixel is a TIN vertex, and the TIN is rebuilt on every pass. A
+  full synthetic run (two 512 × 512 DSMs) takes about 27 s in the test suite;
+  large scenes are untested.
+
+#### DTM and nDSM
+
+The DTM (`interpolate_dtm`):
+1. **Ground pixels keep their DSM value.** Building tops are never used.
+2. **Non-ground pixels inside the TIN's convex hull** get the TIN's linear
+   interpolation. This is a convex combination of three ground values: exact on
+   planar terrain, and it can never overshoot the ground values used.
+3. **Non-ground pixels outside the hull** (objects touching the raster border)
+   get the value of the **nearest ground pixel**. This is extrapolation. Each
+   such pixel is flagged `extrapolated` and its distance is recorded; on
+   terrain of slope `s` its error is at most `s · distance`.
+4. **Invalid DSM pixels stay invalid.** The DTM is not guessed where there is
+   no DSM observation.
+5. With fewer than 3 ground pixels, or collinear ones, no TIN can be built:
+   every non-ground pixel is extrapolated and `tin_failure` is recorded. With no
+   ground pixel at all, it fails with `DtmError`.
+
+The nDSM (`compute_ndsm`) is `DSM − DTM` wherever both are valid, and invalid
+elsewhere.
+- It is exactly 0 on ground pixels, including re-admitted ones, so objects
+  lower than `min_object_height_m` read 0 by design.
+- **Negative values are preserved, never clamped**, and counted. They can only
+  arise where a non-ground pixel lies below the interpolated ground.
+
+#### Outputs
+
+Written to `data/outputs/phase6/synthetic/<dsm product>/` (git-ignored):
+
+| file | content |
+| --- | --- |
+| `dsm.tif` | the input DSM, re-exported (absolute elevation) |
+| `dtm.tif` | absolute bare-ground elevation |
+| `ndsm.tif` | `DSM − DTM`: object height above the extracted ground |
+| `ground_mask.tif` | final ground mask: 1 ground, 0 non-ground, 255 invalid |
+
+- The three surfaces are float32 COGs with nodata −9999; the mask is uint8
+  with nodata 255.
+- CRS and transform are copied from the input DSM. Every file is reopened and
+  checked with `validate_cog`, including an exact pixel comparison.
+- `phase6_report.json` and `phase6_report.md` go to
+  `data/outputs/phase6/synthetic/`.
+- `height_at(path, easting, northing)` is the programmatic "click": it returns
+  the raster value at a map coordinate, or `None` outside the raster or on
+  nodata, never a substitute value. There is no UI in Phase 6.
+
+#### SYNTHETIC acceptance
+
+- **Input:** the first product in `synthetic.dsm_products`,
+  `synthetic_dsm_known_calibration.tif` (Phase 4b, known calibration). The
+  second, `synthetic_dsm.tif` (Phase 4a-calibrated), is a secondary
+  diagnostic.
+- **Truth:** the fixture's analytic terrain plane `T` and its specified
+  building heights `H` (6, 12, 30 and 45 m).
+- **`max_building_extent_m` is derived from the fixture's known footprints.**
+  With `max_building_extent_m: null`, the run takes the largest axis-aligned
+  extent of the known buildings: `slab_c`, 80 px = 40 m, so the final window is
+  81 px = 40.5 m. This uses fixture truth, so the acceptance does **not** test
+  choosing this parameter blind, and it is **not** a real-world validation. For
+  any other DSM the value must be set.
+- **Tolerance, derived at run time, not chosen:**
+  - `eps = max |DSM − (T + H)|` is measured on the input.
+  - Ground pixels keep their DSM value, and a TIN value is a convex combination
+    of ground values on a planar `T`, so `|DTM − T| ≤ eps`.
+  - Then `|nDSM − H| ≤ |DSM − DSM_true| + |DTM − T| ≤ 2 · eps`.
+  - A float64 rounding allowance, `64 · machine_eps · max|DSM|`, is added, plus
+    `slope · distance` for any extrapolated pixel.
+- **Pass rule:** every valid pixel is within both bounds, and
+  `height_at(ndsm.tif)` at every building centroid is within the nDSM bound.
+- **Result (tested):** the acceptance passes.
+  - On the acceptance input, `eps` equals the error Phase 4b measured
+    (6.6 × 10⁻⁵ m), so the nDSM bound is about 1.3 × 10⁻⁴ m.
+  - No building pixel is kept as ground, and no terrain pixel remains
+    non-ground after TIN refinement.
+  - Each of the four centroid queries returns the building's height above
+    ground, not its absolute elevation.
+  - The command writes per-building figures to `phase6_report.md`.
+- **All of these figures are SYNTHETIC.**
+  - The fixture is a best case: planar terrain, flat roofs, sharp edges, and
+    no vegetation or noise.
+  - The nDSM error on terrain pixels is 0 by construction, since ground keeps
+    its DSM value; it is not an accuracy figure.
+  - The secondary product's larger bounds come from the Phase 4a synthetic
+    calibration error. They say nothing about a real calibrated DSM.
+
+#### Tests
+
+Tests are `tests/test_phase6_{ground_dtm,run}.py` (24 tests). They cover:
+- the window schedule ending strictly above the building extent, and required,
+  positive parameters;
+- flat and sloped terrain with several buildings, small and large buildings,
+  and an all-ground scene;
+- a corner building, extrapolated within its `slope · distance` bound;
+- a nodata region staying invalid without disturbing the rest;
+- a building larger than the window being kept as ground (the documented
+  failure mode);
+- `DSM = DTM + nDSM` wherever finite, and negative nDSM preserved and counted;
+- TIN refinement re-admitting a misflagged hill and stopping at a fixed point;
+- no-ground and no-TIN degradation, and square, north-up pixels;
+- strict config loading, the COG round trip, and `height_at`;
+- the synthetic acceptance with the derived tolerance, the four centroid
+  queries, the artifacts and labels, and the CLI's success and failure exits.
+
+Every test uses exact synthetic geometry. Noise, curved terrain, rotated or
+non-flat-roofed buildings, and bridges are not tested.
+
+#### Not yet measured
+
+- real-world DTM accuracy;
+- real-world Phase 6 nDSM and building-height accuracy;
+- verification against manually measured buildings (none have been supplied);
+- real-scene behaviour with vegetation, DSM noise, curved terrain, bridges and
+  non-flat roofs;
+- real-world suitability of the current parameters (`max_terrain_slope` 0.05,
+  `min_object_height_m` 2 m, `tin_refinement_max_iterations` 5). They were
+  reasoned from the fixture, not tuned, and have never been checked on real
+  data. No real-data source for `max_building_extent_m` exists yet.
 
 ### Phase 7 — viewer ❌ NOT IMPLEMENTED
 

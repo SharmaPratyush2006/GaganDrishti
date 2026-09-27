@@ -1,0 +1,56 @@
+# DepthWizard - Phase 6: DTM and nDSM from a DSM
+#
+#   python -m depthwizard.surfaces.phase6 synthetic --config configs/phase6.yaml
+#
+# Phase 6 is an INDEPENDENT, DSM-only product: it extracts the ground from a
+# DSM's shape alone (no Phase 3/4a AGL, no DEM, no labels), interpolates the
+# terrain under objects (DTM) and computes nDSM = DSM - DTM. The pipeline's own
+# above-ground product remains the Phase 3/4a calibrated AGL.
+#
+# Strict loading: an unknown or misspelt key raises ConfigError.
+
+run_id: phase6
+output_dir: data/outputs/phase6
+# Written for invalid DSM/DTM/nDSM pixels. Never 0 (a real nDSM value).
+nodata: -9999.0
+
+ground:
+  # Largest axis-aligned building extent, metres. The final opening window is
+  # the smallest odd pixel count STRICTLY larger than this, so no building can
+  # contain it (the master prompt's "structuring element larger than the
+  # biggest building footprint"). A building larger than this is kept as ground.
+  # null -> derived from the SYNTHETIC fixture's known footprints, the only case
+  # where they are known: slab_c is 80 px = 40 m long at 0.5 m GSD, so the
+  # final window is 81 px = 40.5 m. For any other DSM it must be set.
+  max_building_extent_m: null
+
+  # Rise over run the bare terrain may have. The threshold at window w metres
+  # is min_object_height_m + max_terrain_slope * w, so sloped ground (and the
+  # ridge/valley that border reflection makes of a slope) is not flagged.
+  # Fixture: gradient magnitude hypot(0.02, 0.015) = 0.025; across a square
+  # window the terrain can change by up to 0.025 * sqrt(2) * w = 0.035 * w, and
+  # 0.05 covers that with margin. It also keeps every threshold below the
+  # smallest fixture building: at the final 40.5 m window, 2 + 0.05 * 40.5 =
+  # 4.03 m < 6 m (low_d), so every building is still detected. Not tuned.
+  max_terrain_slope: 0.05
+
+  # Height steps smaller than this (above what the slope allows) are ground by
+  # design: low walls, vehicles. 2 m is below a single storey (~3 m) and below
+  # every fixture building (6-45 m). Also the TIN refinement's re-admission
+  # tolerance. Not tuned.
+  min_object_height_m: 2.0
+
+  # Cap on TIN refinement passes (each pass only re-admits non-ground pixels
+  # within min_object_height_m of the ground TIN; it stops early when nothing
+  # changes). 0 disables refinement. A runtime bound, not a tuned value.
+  tin_refinement_max_iterations: 5
+
+synthetic:
+  # Written by: python -m depthwizard.surfaces.run synthetic --config configs/phase4.yaml
+  phase4b_report: data/outputs/phase4b/phase4b_report.json
+  # The Phase 0 scene the fixture was rendered from (analytic terrain truth).
+  scene_config: configs/default.yaml
+  # Phase 4b DSMs to process. The FIRST is the acceptance input: T + AGL with
+  # the fixture's known calibration (Phase 4b measured max |DSM - truth| =
+  # 6.6e-5 m). The second (Phase 4a-calibrated) is a secondary diagnostic.
+  dsm_products: [synthetic_dsm_known_calibration.tif, synthetic_dsm.tif]
