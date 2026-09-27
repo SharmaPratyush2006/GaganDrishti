@@ -52,6 +52,10 @@ __all__ = [
     "footprint_pixels",
     "render_scene",
     "generate_fixture",
+    "TerrainSpec",
+    "SyntheticDem",
+    "terrain_truth_on_grid",
+    "write_synthetic_dem",
     "main",
 ]
 
@@ -378,6 +382,107 @@ def generate_fixture(
         scene=scene,
         truth=truth,
     )
+
+
+# ---------------------------------------------------------------------------
+# Synthetic terrain (DEM) for the georeferenced DSM path (Phase 4b)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class TerrainSpec:
+    """A deterministic terrain surface and the DEM grid it is sampled on.
+
+    The terrain is a tilted plane defined in the **scene's projected CRS**::
+
+        T(E, N) = base_m + slope_east * (E - E0) + slope_north * (N - N0)
+
+    with ``(E0, N0)`` the scene origin. A plane is chosen on purpose: bilinear
+    resampling reproduces a plane exactly, so any error left after reprojecting
+    the DEM onto the image grid is a georeferencing error (wrong CRS handling,
+    transform or half-pixel convention), not interpolation.
+
+    The DEM is written in a *different* CRS (geographic lon/lat by default, at
+    one arc-second like SRTM) so the reprojection path is always exercised.
+    """
+
+    base_m: float = 540.0
+    slope_east: float = 0.02
+    slope_north: float = -0.015
+    dem_crs: str = "EPSG:4326"
+    #: DEM pixel size in DEM CRS units (1 arc-second for EPSG:4326).
+    dem_pixel_size: float = 1.0 / 3600.0
+    #: Extra DEM pixels around the scene, so every image pixel's bilinear
+    #: kernel lies inside the DEM.
+    margin_px: int = 3
+    dem_nodata: float = -32768.0
+
+    def elevation(self, easting: np.ndarray, northing: np.ndarray, origin: tuple[float, float]) -> np.ndarray:
+        e0, n0 = origin
+        return (self.base_m + self.slope_east * (np.asarray(easting, np.float64) - e0)
+                + self.slope_north * (np.asarray(northing, np.float64) - n0))
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class SyntheticDem:
+    path: Path
+    crs: str
+    transform: Any
+    width: int
+    height: int
+    spec: TerrainSpec
+
+
+def terrain_truth_on_grid(scene: SceneConfig, spec: TerrainSpec) -> np.ndarray:
+    """Exact terrain at every image pixel **centre**, in the scene CRS (float64)."""
+    raster = scene.raster
+    cols = np.arange(raster.width_px) + 0.5
+    rows = np.arange(raster.height_px) + 0.5
+    easting = raster.origin_easting_m + cols[np.newaxis, :] * raster.gsd_m
+    northing = raster.origin_northing_m - rows[:, np.newaxis] * raster.gsd_m
+    return spec.elevation(easting, northing, (raster.origin_easting_m, raster.origin_northing_m))
+
+
+def write_synthetic_dem(scene: SceneConfig, path: str | Path, spec: TerrainSpec = TerrainSpec()) -> SyntheticDem:
+    """Sample :class:`TerrainSpec` on its own DEM grid and write it as a GeoTIFF.
+
+    The DEM grid is north-up in ``spec.dem_crs``, snapped to multiples of
+    ``dem_pixel_size``, covering the scene plus ``margin_px``. Each DEM pixel
+    holds the terrain at its centre, found by transforming that centre into
+    the scene CRS. The array is float32, like SRTM-class products.
+    """
+    from rasterio.transform import Affine
+    from rasterio.warp import transform as warp_transform
+    from rasterio.warp import transform_bounds
+
+    raster = scene.raster
+    left, top = raster.origin_easting_m, raster.origin_northing_m
+    right = left + raster.width_px * raster.gsd_m
+    bottom = top - raster.height_px * raster.gsd_m
+    west, south, east, north = transform_bounds(raster.crs, spec.dem_crs, left, bottom, right, top, densify_pts=21)
+    size = spec.dem_pixel_size
+    x0 = (np.floor(west / size) - spec.margin_px) * size
+    y0 = (np.ceil(north / size) + spec.margin_px) * size
+    width = int(np.ceil((east - x0) / size)) + spec.margin_px
+    height = int(np.ceil((y0 - south) / size)) + spec.margin_px
+    dem_transform = Affine(size, 0.0, x0, 0.0, -size, y0)
+
+    xs = x0 + (np.arange(width) + 0.5) * size
+    ys = y0 - (np.arange(height) + 0.5) * size
+    grid_x, grid_y = np.meshgrid(xs, ys)
+    easting, northing = warp_transform(spec.dem_crs, raster.crs, grid_x.ravel(), grid_y.ravel())
+    values = spec.elevation(np.reshape(easting, grid_x.shape), np.reshape(northing, grid_x.shape),
+                            (raster.origin_easting_m, raster.origin_northing_m)).astype(np.float32)
+
+    path = write_single_band(
+        path, values, crs=spec.dem_crs, transform=dem_transform, nodata=spec.dem_nodata,
+        tags={"CONTENT": "synthetic_terrain_m", MetadataTags.SYNTHETIC: "true",
+              MetadataTags.SCENE_NAME: scene.name, MetadataTags.PRODUCER: "depthwizard.ingest.synthetic"},
+    )
+    return SyntheticDem(path=Path(path), crs=spec.dem_crs, transform=dem_transform, width=width, height=height, spec=spec)
 
 
 # ---------------------------------------------------------------------------

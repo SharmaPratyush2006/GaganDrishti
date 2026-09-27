@@ -14,8 +14,10 @@ Smart India Hackathon 2026 — problem statement **SIH26175**.
 > have an identifiable scale. See the
 > [Phase 4a section](#phase-4a--pixel-space-metric-calibration--implemented-real-data-calibration-largely-unidentifiable).
 > Building footprints come from the DFC2019 **CLS labels** (class 6); nothing
-> here *detects* buildings. There is **no georeferenced DSM, no COG export and
-> no viewer** yet (Phase 4b / Phase 7).
+> here *detects* buildings. **Phase 4b** (georeferenced DSM = DEM + calibrated
+> AGL, exported as COG) is implemented and validated on the **synthetic**
+> fixture only; the real-data georeferenced path is **NOT YET VERIFIED**. There
+> is no viewer yet (Phase 7).
 >
 > **The real-world figures in this repository are the Phase 4a DFC2019
 > measurements, and each one carries its coverage.**
@@ -127,7 +129,7 @@ penumbra softening, and shadows confused with dark roofs, water or asphalt.
                  └──────┬───────┘
                         │  calibrated AGL (= nDSM)
                  ┌──────▼───────┐
-                 │   surfaces   │  DSM = terrain + AGL, COG   (Phase 4b, planned)
+                 │   surfaces   │  DSM = terrain + AGL, COG   (Phase 4b, synthetic only)
                  └──────┬───────┘
                         │  height products
                  ┌──────▼───────┐
@@ -215,8 +217,11 @@ DepthWizard/
 │   │   ├── diagnostics.py        # error accounting, reports
 │   │   ├── config.py             # configs/phase4.yaml loader
 │   │   ├── ablation.py           # TRAINING-only threshold ablations, height census
-│   │   └── run.py                # DFC2019 run + SYNTHETIC control
-│   └── surfaces/                 # NOT IMPLEMENTED (Phase 4b)
+│   │   ├── run.py                # DFC2019 run + SYNTHETIC control
+│   │   └── terrain.py            # Phase 4b: DEM -> image grid (reproject, validate)
+│   └── surfaces/                 # Phase 4b: DSM = T + a*exp(z_rel) + b
+│       ├── dsm.py                # AGL, DSM fusion, nodata propagation
+│       └── run.py                # SYNTHETIC DSM export + COG validation
 ├── tests/
 ├── viewer/                       # NOT IMPLEMENTED
 ├── pyproject.toml
@@ -1078,13 +1083,105 @@ real-data failure is a measurement-validity problem, not a solver bug.
 - **Explicit dh:** unavailable for DFC2019.
 - **Buildings ≥ 20 m on held-out tiles:** not yet measured.
 
-### Phase 4b — georeferenced DSM ❌ NOT IMPLEMENTED (specification only)
+### Phase 4b — georeferenced DSM export ✅ IMPLEMENTED, SYNTHETIC ONLY
 
-Planned: DEM loading (SRTM / CartoDEM), CRS and overlap validation,
-reprojection and resampling, additive terrain fusion `DSM = T + a·r + b`, COG
-GeoTIFF writing with CRS and geotransform preserved, and verification on the
-synthetic fixture. Programmatic COG checks come before any QGIS check. The
-real georeferenced path is **NOT YET VERIFIED**. No DEM has been downloaded.
+> **Phase 4b is implemented and validated on the synthetic georeferenced
+> fixture only. The real-data georeferenced path is NOT YET VERIFIED.**
+> DFC2019 Track 1 tiles have no CRS or geotransform, so no DFC2019 DSM exists
+> here. No external DEM (SRTM, CartoDEM or any other) was downloaded.
+
+Phase 4a is frozen; Phase 4b only consumes its model and calibration code. The
+DSM is assembled as
+
+```
+DSM(x) = T(x) + AGL(x) = T(x) + a·exp(z_rel(x)) + b
+```
+
+- **T** is terrain from a DEM reprojected onto the image grid. The DEM is
+  **additive terrain only**: it is never a scale anchor for the relative
+  field, and no DTM is subtracted.
+- **Phase 6 remains cancelled**, because Phase 3 already predicts AGL (= nDSM).
+
+```bash
+python -m depthwizard.surfaces.run synthetic --config configs/phase4.yaml
+```
+
+Outputs are git-ignored, in `data/outputs/phase4b/`:
+- `synthetic_dsm.tif` and `synthetic_dsm_known_calibration.tif`;
+- `synthetic_dem_reprojected.tif` and `synthetic_agl.tif` (all four are COGs);
+- the source DEM and the fixture;
+- `phase4b_report.json`.
+
+**Components:**
+- `calibration/terrain.py` — `load_terrain_on_grid`.
+  - The image grid is authoritative for CRS, transform, width, height and
+    extent.
+  - The DEM is reprojected with `rasterio.warp.reproject` and **bilinear**
+    resampling.
+  - Invalid pixels stay NaN / nodata, never 0. Invalid pixels are those outside
+    the DEM, and those whose bilinear kernel touches a DEM nodata sample (where
+    GDAL would otherwise renormalise the kernel, i.e. extrapolate; a test caught
+    this).
+  - It fails loudly (`TerrainError`) on:
+    - a missing DEM or image CRS;
+    - a missing (identity) or degenerate transform;
+    - invalid dimensions;
+    - an untransformable CRS pair;
+    - no overlap;
+    - no valid terrain pixel.
+- `surfaces/dsm.py` — `calibrated_agl` and `fuse_dsm`.
+  - Invalid terrain or invalid AGL gives a nodata DSM pixel.
+  - It fails loudly (`DsmError`) on non-finite `a, b`, or on `a ≤ 0`, since a
+    DSM export would then invert the relative field; override with
+    `require_positive_scale=False`.
+  - It also fails on an entirely invalid terrain or AGL grid.
+- `ingest/geotiff.py` — `write_cog` and `validate_cog`.
+  - Writing goes through GDAL's COG driver: DEFLATE with the floating-point
+    predictor (lossless), 256 px tiles, automatic averaged overviews, float32,
+    nodata −9999.
+  - Validation reopens the file and checks: COG layout, tiling, overviews,
+    CRS, transform, dimensions, bounds, nodata, dtype, readability, and the
+    pixel values against memory. It raises `CogError` on any mismatch.
+- `ingest/synthetic.py` — the fixture extension.
+  - `TerrainSpec` is a deterministic tilted plane in the image CRS (540 m base,
+    slopes +0.02 east and −0.015 north).
+  - `write_synthetic_dem` samples it on a 1 arc-second **EPSG:4326** grid, so
+    reprojection is always exercised.
+  - A plane is used because bilinear resampling reproduces it exactly, so any
+    residual is georeferencing error.
+
+**SYNTHETIC acceptance run** (deterministic):
+
+| item | value |
+| --- | --- |
+| image grid | EPSG:32643, 512 × 512, 0.5 m, origin (700000, 3170000) |
+| DEM | EPSG:4326, 17 × 16 px at 1″ |
+| reprojection | EPSG:4326 → EPSG:32643, bilinear, onto 512 × 512 |
+| terrain vs analytic truth | max 3.6 × 10⁻⁵ m, MAE 9.8 × 10⁻⁶ m, RMSE 1.2 × 10⁻⁵ m |
+| relative field | `z_rel = log(AGL_true + 1) + 0.5` in float32, the Phase 4a synthetic stand-in; the grey fixture says nothing through a real Phase 3 network |
+
+DSM vs `T_true + AGL_true`, over 262,144 valid pixels with 0 nodata:
+
+| DSM | a, b | MAE | RMSE | max abs |
+| --- | --- | ---: | ---: | ---: |
+| `synthetic_dsm_known_calibration.tif` (known a, b: **geometric acceptance**) | 0.6065, −1 | 1.8 × 10⁻⁵ m | 2.1 × 10⁻⁵ m | **6.6 × 10⁻⁵ m** (tolerance 1 mm: **PASS**) |
+| `synthetic_dsm.tif` (a, b from the frozen Phase 4a synthetic calibration) | 0.6124, −1.329 | 0.314 m | 0.316 m | 0.319 m |
+
+- The 1 mm tolerance is well above float32 storage (~3 × 10⁻⁵ m at 540 m) and
+  well below the 5 mm a half-pixel georeferencing error would cause on this
+  slope.
+- The Phase 4a-calibrated DSM's error is exactly the Phase 4a synthetic
+  calibration error (b off by −0.33 m). No new error comes from the DSM stage.
+
+**COG validation:** all four products passed. Each has COG layout, 256 × 256
+tiles, a 2× overview, DEFLATE, and the CRS, transform, dimensions, bounds,
+nodata and dtype preserved. The pixels match memory exactly.
+
+**QGIS:** not performed (deferred).
+
+**Not yet verified:**
+- a real georeferenced scene with a real DEM;
+- DFC2019, which has no georeferencing.
 
 ### Phase 5 — validation 🟡 INTERFACE IMPLEMENTED
 

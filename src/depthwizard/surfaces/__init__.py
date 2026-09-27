@@ -1,10 +1,14 @@
-"""Surface models - NOT IMPLEMENTED in Phase 0.
+"""Surface products (Phase 4b): the georeferenced DSM.
 
-Planned scope (see the README checklist): assembling per-building heights into raster surface
-products - DSM, DTM and the normalised nDSM difference.
+``DSM = T + AGL = T + a*exp(z_rel) + b`` -- terrain from a DEM reprojected onto
+the image grid (:mod:`depthwizard.calibration.terrain`) plus the calibrated
+above-ground height. There is no DTM / nDSM step: Phase 3 already predicts AGL,
+which *is* the nDSM (Phase 6 is cancelled).
 
-Nothing here is implemented yet. This package exists so that the import path
-is stable from the first commit onwards.
+Validated on the SYNTHETIC georeferenced fixture only; the real-data
+georeferenced path is NOT YET VERIFIED.
 """
 
-__all__: list[str] = []
+from depthwizard.surfaces.dsm import DsmError, DsmResult, calibrated_agl, fuse_dsm
+
+__all__ = ["DsmError", "DsmResult", "calibrated_agl", "fuse_dsm"]
