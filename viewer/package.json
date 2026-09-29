@@ -7,7 +7,9 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "test": "vitest run"
+    "test": "vitest run",
+    "export-mesh": "node scripts/export-mesh.mjs",
+    "acceptance:phase8": "node scripts/phase8-acceptance.mjs"
   },
   "dependencies": {
     "@gltf-transform/core": "^4.5.1",

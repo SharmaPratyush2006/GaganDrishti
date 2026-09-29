@@ -29,10 +29,14 @@ dependencies = [
 # from the PyTorch index (e.g. cu124) so pip does not pull a CPU wheel.
 ml = ["torch>=2.1", "timm>=0.9.16", "transformers>=4.45"]
 
+# Phase 8 demo API (python -m depthwizard.demo serve). Demo-grade only:
+# `pip install -e ".[demo]"`. The demo CLI's synthetic run does not need it.
+demo = ["fastapi>=0.110", "uvicorn>=0.29", "python-multipart>=0.0.9"]
+
 # Standalone GDAL bindings. See the note in requirements.txt - prefer conda.
 gdal = ["GDAL>=3.6"]
 
-dev = ["pytest>=7.4"]
+dev = ["pytest>=7.4", "httpx>=0.27"]
 
 [project.scripts]
 depthwizard-make-fixture = "depthwizard.ingest.synthetic:main"

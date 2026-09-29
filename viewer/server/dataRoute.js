@@ -5,7 +5,8 @@
  * `data/` lives outside `viewer/`. This serves exactly one directory,
  * `<repo>/data/outputs`, at `/data/outputs/*` -- GET/HEAD only, no directory
  * listings, no path escaping -- plus `/__data_index`, a list of the pipeline
- * reports and .npy arrays that exist, so the viewer never hard-codes a path.
+ * reports (and the Phase 8 demo manifest) and .npy arrays that exist, so the
+ * viewer never hard-codes a path.
  *
  * Development-only: Vite binds to localhost by default.
  */
@@ -14,7 +15,8 @@ import path from 'node:path';
 
 const URL_PREFIX = '/data/outputs/';
 const INDEX_URL = '/__data_index';
-const REPORT_RE = /^phase\d+[a-z]?_report\.json$/;
+// Pipeline reports, plus the Phase 8 demo manifest (demo/reports/demo_report.json).
+const REPORT_RE = /^(?:phase\d+[a-z]?|demo)_report\.json$/;
 const MAX_DEPTH = 6;
 const CONTENT_TYPES = {
   '.tif': 'image/tiff',

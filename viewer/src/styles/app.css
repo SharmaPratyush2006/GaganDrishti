@@ -68,4 +68,9 @@ code { color: var(--accent); }
 .linked-panel { border: 1px solid #39d5ff; border-radius: 4px; padding: 8px 10px; margin-top: 8px; max-width: 900px; }
 .linked-head { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-bottom: 4px; }
 .export-panel { border: 1px solid #2a313a; border-radius: 4px; padding: 8px 10px; margin-top: 8px; max-width: 900px; }
+.demo-button { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+.demo-panel { border: 1px solid var(--warn); border-radius: 4px; padding: 8px 12px; margin: 8px 0 16px; max-width: 1100px; }
+.demo-panel h2 { font-size: 16px; margin: 4px 0; }
+.demo-panel h3 { font-size: 14px; margin: 12px 0 4px; }
+.demo-figure { display: block; max-width: 560px; width: 100%; margin: 8px 0; border: 1px solid #2a313a; }
 .linked-canvas { display: block; margin: 6px 0; border: 1px solid #2a313a; cursor: crosshair; }

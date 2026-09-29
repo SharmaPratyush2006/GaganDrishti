@@ -10,7 +10,7 @@ import { describeSourceImage, textureForRaster } from '../src/3d/texture.js';
 import { buildTileMesh } from '../src/3d/tileMesh.js';
 import { readGeoTiff } from '../src/data/geotiffLoader.js';
 import { loadDemo } from '../src/data/load.js';
-import { diskFetch, expected, FIXTURES, hasPhase6Outputs, readArrayBuffer } from './helpers.js';
+import { diskFetch, expected, FIXTURES, hasPhase6Outputs, PHASE6_REPORT, readArrayBuffer } from './helpers.js';
 import { grid, rasterFrom } from './mesh3d.helpers.js';
 
 const loadImage = (name) => readGeoTiff(readArrayBuffer(path.join(FIXTURES, name)), { source: name, productType: 'image', allBands: true });
@@ -156,7 +156,7 @@ describe('texture projection', () => {
 
 describe.skipIf(!hasPhase6Outputs())('real Phase 4b source image on the Phase 6 grid', () => {
   it('is grayscale, aligned with the nDSM, and textured as grayscale (no RGB claim)', async () => {
-    const d = await loadDemo({}, diskFetch());
+    const d = await loadDemo({ phase6Report: PHASE6_REPORT }, diskFetch());
     const t = textureForRaster(d.rasters.ndsm, d.rasters.image);
     expect(t.source.kind).toBe('grayscale');
     expect(t.alignment.aligned).toBe(true);

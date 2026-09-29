@@ -21,7 +21,7 @@ import {
 import { encodePng } from '../src/export/png.js';
 import { loadDemo } from '../src/data/load.js';
 import { makeRaster, mapToPixel, pixelToMap, validityMask } from '../src/data/raster.js';
-import { diskFetch, expected, hasPhase6Outputs, REPO_ROOT } from './helpers.js';
+import { diskFetch, expected, hasPhase6Outputs, PHASE6_REPORT, REPO_ROOT } from './helpers.js';
 import { grid, rasterFrom } from './mesh3d.helpers.js';
 
 const T = expected['tiny_ndsm_cog.tif'].transform;
@@ -344,7 +344,7 @@ describe('Draco (KHR_draco_mesh_compression)', () => {
 
 describe.skipIf(!hasPhase6Outputs())('real Phase 6 nDSM', () => {
   it('uncompressed + Draco export of the acceptance nDSM: dimensions, heights at Phase 6 clicks, Draco verified', async () => {
-    const d = await loadDemo({}, diskFetch());
+    const d = await loadDemo({ phase6Report: PHASE6_REPORT }, diskFetch());
     const raster = d.rasters.ndsm;
     const report = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, d.products.phase6Report), 'utf-8'));
     const plain = await exportTerrainGlb({ raster, sourceImage: d.rasters.image });

@@ -1,16 +1,25 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 
 import DataSummary from './components/DataSummary.jsx';
+import DemoPanel from './components/DemoPanel.jsx';
 import MeshDebugPanel from './components/MeshDebugPanel.jsx';
 import Viewer3D from './components/Viewer3D.jsx';
+import { chooseNpy, readDemoManifest } from './data/demo.js';
 import { fetchIndex, fetchNpy, loadDemo } from './data/load.js';
 import { PRODUCT_MEANINGS } from './data/metadata.js';
+import { reportPhase } from './data/products.js';
 
 const SURFACES = ['ndsm', 'dsm', 'dtm'];
 
+// Explicit selection (never index order): ?phase6Report=<path>&product=<name>, ?npy=<path>, ?demo=1.
+const PARAMS = new URLSearchParams(window.location.search);
+
 export default function App() {
   const [state, setState] = useState({ status: 'idle' });
-  const [productName, setProductName] = useState(undefined);
+  const [productName, setProductName] = useState(PARAMS.get('product') ?? undefined);
+  const [index, setIndex] = useState(null);
+  const [phase6Report, setPhase6Report] = useState(PARAMS.get('phase6Report') ?? '');
+  const [npyPath, setNpyPath] = useState(PARAMS.get('npy') ?? '');
   const [surface, setSurface] = useState('ndsm');
   const [tint, setTint] = useState(false);
   const [showTexture, setShowTexture] = useState(true);
@@ -26,18 +35,41 @@ export default function App() {
     }
   }
 
-  const loadPhase6 = (name) => {
+  // With several Phase 6 reports and none chosen, the loader refuses to guess (products.js).
+  const loadPhase6 = (name, report = phase6Report) => {
     setProductName(name);
-    run(() => loadDemo({ productName: name }));
+    run(() => loadDemo({ phase6Report: report || undefined, productName: name }));
   };
 
-  const loadRelative = () => run(async () => {
+  const loadRelative = (chosen = npyPath) => run(async () => {
     const t0 = performance.now();
-    const index = await fetchIndex();
-    if (index.npy.length === 0) throw new Error('no .npy relative-height output found under data/outputs');
-    const raster = await fetchNpy(index.npy[0]);
+    const raster = await fetchNpy(chooseNpy(await fetchIndex(), chosen));
     return { relative: raster, loadMs: performance.now() - t0 };
   });
+
+  // Phase 8: the demo manifest names its own Phase 6 report; load exactly that one.
+  const loadPhase8Demo = () => run(async () => {
+    const { manifest, path, phase6Report: report, productName: name } = await readDemoManifest();
+    setPhase6Report(report);
+    setProductName(name);
+    const loaded = await loadDemo({ phase6Report: report, productName: name });
+    return { ...loaded, demo: { manifest, path } };
+  });
+
+  useEffect(() => {
+    fetchIndex().then((idx) => {
+      setIndex(idx);
+      const p6 = idx.reports.filter((p) => reportPhase(p) === '6');
+      if (p6.length === 1) setPhase6Report((cur) => cur || p6[0]);
+    }).catch(() => setIndex(null));
+    if (PARAMS.get('demo') === '1') loadPhase8Demo();
+    else if (PARAMS.get('phase6Report')) loadPhase6(PARAMS.get('product') ?? undefined, PARAMS.get('phase6Report'));
+    else if (PARAMS.get('npy')) loadRelative(PARAMS.get('npy'));
+    // Runs once: the URL is read at start-up only.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const phase6Reports = index ? index.reports.filter((p) => reportPhase(p) === '6') : [];
 
   const loaded = state.status === 'loaded';
   const meshRaster = loaded ? (state.relative ?? state.rasters?.[surface] ?? null) : null;
@@ -58,18 +90,37 @@ export default function App() {
         <span className="step">Step 6: quadtree-LOD mesh · source-image texture · orbit + first-person · click-to-measure (nDSM) · Phase 5 error/confidence overlays · 2D↔3D linked cursor</span>
       </header>
       <div className="actions">
+        <button className="demo-button" onClick={loadPhase8Demo} disabled={state.status === 'loading'}>Load Phase 8 Demo</button>
+        {phase6Reports.length > 1 && (
+          <label>
+            Phase 6 report:{' '}
+            <select value={phase6Report} onChange={(e) => setPhase6Report(e.target.value)} data-testid="phase6-report">
+              <option value="">— choose —</option>
+              {phase6Reports.map((p) => <option key={p} value={p}>{p}</option>)}
+            </select>
+          </label>
+        )}
         <button onClick={() => loadPhase6(productName)} disabled={state.status === 'loading'}>Load Phase 6 demo</button>
         {state.products && (
           <label>
             Phase 6 product:{' '}
-            <select value={state.products.productName} onChange={(e) => loadPhase6(e.target.value)}>
+            <select value={state.products.productName} onChange={(e) => loadPhase6(e.target.value, state.products.phase6Report)}>
               {state.products.availableProducts.map((p) => (
                 <option key={p} value={p}>{p}</option>
               ))}
             </select>
           </label>
         )}
-        <button onClick={loadRelative} disabled={state.status === 'loading'}>Load a Phase 3 relative .npy</button>
+        {index && index.npy.length > 1 && (
+          <label>
+            Relative .npy:{' '}
+            <select value={npyPath} onChange={(e) => setNpyPath(e.target.value)} data-testid="npy-choice">
+              <option value="">— choose —</option>
+              {index.npy.map((p) => <option key={p} value={p}>{p}</option>)}
+            </select>
+          </label>
+        )}
+        <button onClick={() => loadRelative()} disabled={state.status === 'loading'}>Load a Phase 3 relative .npy</button>
       </div>
       {loaded && state.rasters && (
         <fieldset className="surface-choice">
@@ -98,6 +149,7 @@ export default function App() {
           <MeshDebugPanel info={meshInfo} />
         </section>
       )}
+      {loaded && state.demo && <DemoPanel manifest={state.demo.manifest} path={state.demo.path} />}
       {loaded && <DataSummary state={state} />}
     </div>
   );

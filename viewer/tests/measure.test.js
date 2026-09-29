@@ -9,7 +9,7 @@ import { loadDemo } from '../src/data/load.js';
 import { readNpyRaster } from '../src/data/npy.js';
 import { pixelToMap } from '../src/data/raster.js';
 import { domEvent, fakeCanvas } from './dom.helpers.js';
-import { diskFetch, expected, hasPhase6Outputs } from './helpers.js';
+import { diskFetch, expected, hasPhase6Outputs, PHASE6_REPORT } from './helpers.js';
 import { grid, rasterFrom } from './mesh3d.helpers.js';
 
 const T = expected['tiny_ndsm_cog.tif'].transform;
@@ -246,7 +246,7 @@ describe.skipIf(!hasPhase6Outputs())('real Phase 6 nDSM', () => {
     const fs = await import('node:fs');
     const path = await import('node:path');
     const { REPO_ROOT } = await import('./helpers.js');
-    const d = await loadDemo({}, diskFetch());
+    const d = await loadDemo({ phase6Report: PHASE6_REPORT }, diskFetch());
     const report = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, d.products.phase6Report), 'utf-8'));
     for (const surface of ['ndsm', 'dsm']) {
       const hm = heightmapFromRaster(d.rasters[surface]);

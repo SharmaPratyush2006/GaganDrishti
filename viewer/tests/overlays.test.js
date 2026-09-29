@@ -19,7 +19,7 @@ import { createDataTexture, NODATA_TEXEL } from '../src/3d/texture.js';
 import { readGeoTiff } from '../src/data/geotiffLoader.js';
 import { loadDemo } from '../src/data/load.js';
 import { makeRaster, validityMask } from '../src/data/raster.js';
-import { diskFetch, expected, FIXTURES, hasPhase6Outputs, readArrayBuffer, REPO_ROOT } from './helpers.js';
+import { diskFetch, expected, FIXTURES, hasPhase6Outputs, PHASE6_REPORT, readArrayBuffer, REPO_ROOT } from './helpers.js';
 import { grid, rasterFrom } from './mesh3d.helpers.js';
 
 const T = expected['tiny_ndsm_cog.tif'].transform;
@@ -313,7 +313,7 @@ describe.skipIf(!hasPhase6Outputs())('real Phase 5 / Phase 6 outputs', () => {
   });
 
   it('acceptance product: nDSM shown -> both overlays refused with the DSM-vs-nDSM reason', async () => {
-    const d = await loadDemo({}, fetchImpl);
+    const d = await loadDemo({ phase6Report: PHASE6_REPORT }, fetchImpl);
     for (const kind of ['error', 'confidence']) {
       const ov = buildOverlay(kind, { ...ctxFor(d, 'ndsm'), diagnostic: d.rasters[kind] });
       expect(ov.available).toBe(false);
@@ -324,11 +324,11 @@ describe.skipIf(!hasPhase6Outputs())('real Phase 5 / Phase 6 outputs', () => {
   });
 
   it('a product whose source DSM Phase 5 validated: overlays available on its DSM only, legend = report states', async () => {
-    const report = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'data/outputs/phase6/synthetic/phase6_report.json'), 'utf-8'));
+    const report = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, PHASE6_REPORT), 'utf-8'));
     const names = Object.keys(report.products);
     let found = 0;
     for (const name of names) {
-      const d = await loadDemo({ productName: name }, fetchImpl);
+      const d = await loadDemo({ phase6Report: PHASE6_REPORT, productName: name }, fetchImpl);
       if (!d.rasters.error) continue;
       found++;
       const err = buildOverlay('error', { ...ctxFor(d, 'dsm'), diagnostic: d.rasters.error });

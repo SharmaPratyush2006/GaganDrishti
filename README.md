@@ -4,8 +4,41 @@
 
 Smart India Hackathon 2026 — problem statement **SIH26175**.
 
-> **Status: Phases 0–3 complete; Phase 4a (pixel-space metric calibration)
-> implemented, but on real DFC2019 its calibration is largely unidentifiable.**
+## The problem, in one paragraph
+
+Measuring how tall buildings are normally takes stereo pairs, lidar or radar,
+and none of those exists for most places on most dates. A single daylight
+optical image already contains a free height signal: **every building casts a
+shadow**, and the sun angles in the image metadata turn shadow length into
+height (`h = L · tan θ`). DepthWizard is a pipeline built around that idea:
+ingest one image and its metadata, decide whether metric heights are possible
+at all, measure heights where they are, produce relative heights where they
+are not, and show the result in 3D with the validation evidence next to it.
+
+## Status at a glance
+
+Every claim below is one of four kinds. **IMPLEMENTED** means the code exists
+and is tested. **MEASURED** means a number was obtained by running it. **NOT
+YET MEASURED** means no number exists and none is shown. **PLANNED** means
+there is no code.
+
+| Capability | Status | Where the evidence is |
+| --- | --- | --- |
+| Ingest a GeoTIFF/PNG/JPG, read CRS, GSD and sun angles with provenance, route to ABSOLUTE or RELATIVE (Phase 1) | IMPLEMENTED | [Ingest](#ingest) |
+| Shadow length → height, `h = L·tanθ`, with **supplied** footprints (Phase 2) | IMPLEMENTED; MEASURED on the synthetic fixture: **MAE 0.2301 m, max 0.3431 m** (SYNTHETIC) | [Phase 2 accuracy](#phase-2-accuracy-on-the-synthetic-fixture) |
+| Relative height from one RGB tile, DINOv2-Small + DPT decoder (Phase 3) | IMPLEMENTED, trained on real DFC2019; output is **unitless** | [Phase 3](#phase-3--relative-height-baseline--trained-on-real-data-relative-only) |
+| Relative → metres per tile via shadows (Phase 4a) | IMPLEMENTED; MEASURED on DFC2019, **largely unidentifiable** (32 / 209 fits) | [Phase 4a](#phase-4a--pixel-space-metric-calibration--implemented-real-data-calibration-largely-unidentifiable) |
+| Georeferenced DSM export as COG (Phase 4b) | IMPLEMENTED, **SYNTHETIC only**; real-data path NOT YET VERIFIED | [Phase 4b](#phase-4b--georeferenced-dsm-export--implemented-synthetic-only) |
+| Validation harness: metrics, error map, confidence flags (Phase 5) | IMPLEMENTED; MEASURED once as a city-held-out evaluation with LiDAR-anchored per-tile calibration (JAX → OMA, 714 of 7,072 tiles). **Not** zero-shot | [Phase 5](#phase-5--validation-harness--implemented) |
+| DTM and nDSM from a DSM (Phase 6) | IMPLEMENTED, **SYNTHETIC only**; real-world accuracy NOT YET MEASURED | [Phase 6](#phase-6--dtm-and-ndsm-from-a-dsm--implemented-synthetic-only) |
+| 3D viewer: LOD terrain, flythrough, click-to-measure, error/confidence overlays, glTF/Draco export (Phase 7) | IMPLEMENTED; browser-accepted on synthetic data. **FPS NOT YET MEASURED** | [Phase 7](#phase-7--3d-viewer--implemented), [`viewer/README.md`](viewer/README.md) |
+| One-command demo, FastAPI wrapper, demo panel in the viewer (Phase 8) | IMPLEMENTED | [Phase 8](#phase-8--demo-api-and-end-to-end-demo--implemented) |
+| Per-pixel height uncertainty | NOT YET MEASURED (no uncertainty product exists) | — |
+| Arbitrary uploaded ABSOLUTE GeoTIFF → metric DSM | **Not implemented.** An upload gets ingest, routing and a unitless relative field only | [What an upload gets](#what-an-uploaded-image-gets) |
+| Scene stitching, learned uncertainty, batch processing, Cartosat fine-tuning (Phase 9) | PLANNED | [Phase 9](#phase-9--planned) |
+
+### Details of the current status
+
 > Phase 3 was trained on real DFC2019 Track 1 and predicts **relative, unitless
 > above-ground height (AGL)**. Phase 4a converts it to metres per tile,
 > `AGL = a·exp(z_rel) + b`, anchored on building shadows, and scores it against
@@ -25,8 +58,9 @@ Smart India Hackathon 2026 — problem statement **SIH26175**.
 > calibration**: the model was trained on Jacksonville (JAX) only and evaluated
 > on Omaha (OMA). This is **not** an unseen-city zero-shot result, because OMA
 > lidar sets each tile's metric scale. Only 714 of 7,072 OMA tiles could be
-> calibrated (see [Phase 5](#phase-5--validation-harness--implemented)). There
-> is no viewer yet (Phase 7).
+> calibrated (see [Phase 5](#phase-5--validation-harness--implemented)).
+> **Phase 7** (3D viewer) and **Phase 8** (demo and API) are implemented; the
+> end-to-end demo runs on the **synthetic** fixture.
 >
 > **The real-world figures in this repository are DFC2019 measurements, and
 > each one carries its coverage.**
@@ -170,10 +204,13 @@ The `shadows` package sits between `ingest` and `physics`: it turns pixels into
 a shadow mask, measures each **supplied** footprint's shadow along the anti-sun
 direction, and hands the length to `physics` for inversion.
 
-Of the above, `ingest`, `physics`, `shadows`, `calibration` (Phase 4a, pixel
-space) and `validation` have an implementation; `relative` (Phase 3) produces
-the field `calibration` scales. `surfaces` and `viewer` are empty placeholders
-that exist so import paths stay stable from the first commit.
+Every stage above has an implementation: `ingest`, `physics`, `shadows`,
+`calibration` (Phase 4a, pixel space), `surfaces` (Phase 4b DSM, Phase 6
+DTM/nDSM) and `validation` (Phase 5) in Python; `relative` (Phase 3) produces
+the field `calibration` scales. The viewer is the separate JavaScript app in
+`viewer/` (Phase 7). The Python `depthwizard.viewer` package is still an empty
+placeholder, kept so import paths stay stable. `depthwizard.demo` (Phase 8)
+runs the existing stages in order; it adds no algorithm of its own.
 
 ### Absolute vs relative mode
 
@@ -189,6 +226,18 @@ metres, or only relative to each other?
 A pixel shadow length only becomes a metre shadow length if you know the GSD,
 and it only becomes a height if you know the sun elevation. Without both,
 `h = L·tan(θ)` has no units to work with — hence the split.
+
+**ABSOLUTE means metric heights are *possible*, not that they were produced.**
+An ABSOLUTE input still needs building footprints for Phase 2 (DepthWizard does
+not detect buildings), and the georeferenced DSM path (Phase 4b) has only been
+run on the synthetic fixture. So:
+
+- a height is labelled **metres** only when it came out of the metric path
+  (ABSOLUTE input *and* a metric product);
+- a **relative** field is **unitless** everywhere, including when it was
+  computed from an ABSOLUTE image; it is never labelled metres;
+- the demo, the API and the viewer all apply these two rules
+  (Python side: `depthwizard/demo/common.py`).
 
 ---
 
@@ -251,15 +300,22 @@ DepthWizard/
 │   │   ├── ablation.py           # TRAINING-only threshold ablations, height census
 │   │   ├── run.py                # DFC2019 run + SYNTHETIC control
 │   │   └── terrain.py            # Phase 4b: DEM -> image grid (reproject, validate)
-│   └── surfaces/                 # Phase 4b DSM; Phase 6 DTM / nDSM
-│       ├── dsm.py                # Phase 4b: AGL, DSM fusion, nodata propagation
-│       ├── run.py                # Phase 4b: SYNTHETIC DSM export + COG validation
-│       ├── ground.py             # Phase 6: progressive morphological ground filter
-│       ├── dtm.py                # Phase 6: TIN re-admission, DTM, nDSM = DSM - DTM
-│       ├── phase6.py             # Phase 6: export, height_at, SYNTHETIC acceptance CLI
-│       └── phase6_config.py      # Phase 6: configs/phase6.yaml loader
+│   ├── surfaces/                 # Phase 4b DSM; Phase 6 DTM / nDSM
+│   │   ├── dsm.py                # Phase 4b: AGL, DSM fusion, nodata propagation
+│   │   ├── run.py                # Phase 4b: SYNTHETIC DSM export + COG validation
+│   │   ├── ground.py             # Phase 6: progressive morphological ground filter
+│   │   ├── dtm.py                # Phase 6: TIN re-admission, DTM, nDSM = DSM - DTM
+│   │   ├── phase6.py             # Phase 6: export, height_at, SYNTHETIC acceptance CLI
+│   │   └── phase6_config.py      # Phase 6: configs/phase6.yaml loader
+│   └── demo/                     # Phase 8: end-to-end demo + FastAPI wrapper
+│       ├── synthetic.py          # runs Phases 4b, 1, 2, 5, 6, 7-export on the fixture
+│       ├── process.py            # one uploaded image: ingest, mode, Phase 3 relative
+│       ├── api.py                # /health, /process, /demo/synthetic, /outputs
+│       ├── common.py             # units, "not available", "not yet measured"
+│       └── __main__.py           # python -m depthwizard.demo {synthetic,process,serve}
 ├── tests/
-├── viewer/                       # NOT IMPLEMENTED
+├── viewer/                       # Phase 7 3D viewer (React + Three.js + Vite)
+│   └── scripts/                  # mesh export CLI, Phase 8 browser acceptance
 ├── pyproject.toml
 └── requirements.txt
 ```
@@ -280,6 +336,9 @@ pytest
 # 3. Generate the synthetic fixture
 python scripts/make_synthetic_fixture.py --config configs/default.yaml
 ```
+
+To run the whole pipeline end to end and look at it in 3D, see
+[Phase 8: running the demo](#running-the-demo).
 
 Outputs land in `data/processed/synthetic/` (git-ignored):
 
@@ -1946,10 +2005,224 @@ non-flat-roofed buildings, and bridges are not tested.
   reasoned from the fixture, not tuned, and have never been checked on real
   data. No real-data source for `max_building_extent_m` exists yet.
 
-### Phase 7 — viewer ❌ NOT IMPLEMENTED
+### Phase 7 — 3D viewer ✅ IMPLEMENTED
 
-- [ ] FastAPI service
-- [ ] Web map viewer and per-building inspection (Three.js)
+A browser viewer for the pipeline's height products (React, plain Three.js,
+Vite). Full documentation, including the Phase 7 acceptance record, is in
+[`viewer/README.md`](viewer/README.md).
+
+- [x] Loads Phase 4b/5/6 products by following the reports' own links, and
+      Phase 3 `.npy` relative fields; nodata stays nodata
+- [x] Quadtree-LOD terrain mesh, crack-free, nodata never bridged; the source
+      image as texture when it is on the same grid
+- [x] Orbit camera and first-person flythrough (`W A S D Q E`, `Shift`)
+- [x] **Click-to-measure**: the value is read from the **raster** at the
+      clicked pixel, never from the rendered mesh. Phase 6 data reports the
+      nDSM in metres; a Phase 3 `.npy` reports a **unitless** relative value
+- [x] Phase 5 **error** and **confidence** overlays, shown only on the surface
+      they actually validate (the source DSM), with the reason shown
+      everywhere else. The confidence overlay is labelled "rule-based quality
+      flags, not probabilities"
+- [x] 2D ↔ 3D linked cursor
+- [x] glTF (`.glb`) export of the displayed raster at full resolution,
+      optionally Draco-compressed and re-parsed to verify it
+- [x] Explicit data selection: `?phase6Report=<path>&product=<name>`,
+      `?npy=<path>`, `?demo=1`. With several Phase 6 reports and no choice,
+      the viewer refuses instead of picking one
+
+Measured at the Phase 7 acceptance (2026-09-29, headless Chrome with
+SwiftShader WebGL, synthetic data): 199 / 199 viewer tests, 75 / 75 browser
+checks. Every click-to-measure value equalled rasterio and Phase 6
+`height_at()` exactly. **FPS: not yet measured.** Browser verification has
+been headless Chrome only.
+
+### Phase 8 — demo API and end-to-end demo ✅ IMPLEMENTED
+
+Phase 8 adds no new algorithm. It runs the existing stages in order, writes
+every output into one git-ignored tree, and puts the evidence a judge needs
+in front of them: the metadata, the shadow physics, the 3D surface, the
+measurement and the validation.
+
+#### Running the demo
+
+```bash
+# 1. Python side (from the repository root)
+pip install -e ".[dev,demo]"
+python -m depthwizard.demo synthetic        # deterministic; writes data/outputs/demo/
+
+# 2. Viewer
+cd viewer
+npm install                                  # first time only
+npm run dev                                  # http://localhost:5173
+# open http://localhost:5173/?demo=1, or press "Load Phase 8 Demo"
+
+# 3. Optional: the API
+python -m depthwizard.demo serve             # http://127.0.0.1:8000 (docs at /docs)
+
+# 4. Optional: browser acceptance + screenshots (needs Chrome and step 2 running)
+cd viewer && npm run acceptance:phase8 -- --api http://127.0.0.1:8000
+```
+
+`python -m depthwizard.demo synthetic --no-mesh` skips the glTF/Draco export,
+which is the one step that needs Node.
+
+#### What the synthetic demo runs
+
+On the Phase 0 synthetic fixture (512 × 512, EPSG:32643, GSD 0.5 m, sun
+elevation 45°, azimuth 135°), in this order:
+
+| stage | phase | existing module |
+| --- | --- | --- |
+| georeferenced DSM (COG) | 4b | `surfaces.run.run_synthetic_dsm` |
+| ingest + ABSOLUTE/RELATIVE routing | 1 | `ingest.route` |
+| shadow length → height | 2 | `shadows.ShadowHeightPipeline` |
+| validation, error map, confidence flags | 5 | `validation.run.run_synthetic` |
+| DTM + nDSM, click test at building centroids | 6 | `surfaces.phase6.run_phase6_synthetic` |
+| glTF / Draco mesh | 7 | `viewer/scripts/export-mesh.mjs` (the viewer's own exporter) |
+
+**Everything in this run is SYNTHETIC.** The heights were *specified* when the
+fixture was generated, and the footprints come from the fixture's truth
+sidecar. The relative field that Phase 4b turns into a DSM is **constructed
+from the fixture's truth** (`z_rel = log(AGL_true + 1) + c`), **not predicted
+by Phase 3**: the fixture is a flat grayscale rendering the network never saw,
+and feeding it one band copied three times would fabricate RGB. The run shows
+that the geometry and the plumbing are right. It says nothing about real-world
+accuracy.
+
+Results of the demo run (from `data/outputs/demo/reports/demo_report.md`):
+
+| stage | result (SYNTHETIC) |
+| --- | --- |
+| Phase 2 shadow heights | tower_a 29.6985 m (specified 30), block_b 12.0208 m (12), slab_c 45.2548 m (45), low_d 5.6569 m (6). **MAE 0.2301 m, max 0.3431 m**, against a pixel-grid bound of 0.3536 m |
+| Phase 4b DSM | known calibration: max \|DSM − truth\| 6.6 × 10⁻⁵ m; Phase 4a synthetic calibration: MAE 0.3140 m |
+| Phase 5 validation | AGL and DSM: overall MAE 0.3140 m, RMSE 0.3156 m, building MAE 0.1620 m. Real-world validation: not yet measured |
+| Phase 6 nDSM at the four centroids | 30.0000 / 12.0000 / 45.0000 / 6.0000 m, largest error 3.4 × 10⁻⁵ m; acceptance PASSED |
+| Phase 7 mesh | nDSM `.glb`: 14,663,100 B uncompressed; 225,308 B with Draco (verified in the file) |
+
+Outputs (git-ignored):
+
+| path | contents |
+| --- | --- |
+| `data/outputs/demo/input/` | the fixture image and truth sidecar |
+| `data/outputs/demo/processed/` | Phase 4b and Phase 6 rasters (COG) |
+| `data/outputs/demo/validation/` | Phase 5 report, error maps, confidence rasters |
+| `data/outputs/demo/mesh/` | nDSM `.glb`, uncompressed and Draco |
+| `data/outputs/demo/reports/` | `demo_report.json` / `.md`, Phase 2 table and figure |
+| `data/outputs/demo/screenshots/` | acceptance screenshots and `acceptance.json` |
+| `data/outputs/uploads/<run-id>/` | one directory per `/process` upload |
+
+#### In the viewer
+
+"Load Phase 8 Demo" (or `?demo=1`) reads `demo_report.json` and opens the
+Phase 6 nDSM of the acceptance product. The demo panel shows:
+
+- the input metadata: mode (ABSOLUTE), CRS, GSD and both sun angles, with
+  where each value came from;
+- the Phase 2 table (`L` in pixels and metres, `h = L·tanθ`, the specified
+  height, the error), labelled *Shadow Physics — Synthetic Fixture*;
+- the Phase 5 validation metrics and error-map figure, labelled synthetic,
+  with "Real-world validation: not yet measured";
+- "Uncertainty: not yet measured".
+
+The Phase 7 tools work on it unchanged: flythrough, click-to-measure (which
+returns the Phase 6 raster value), the linked cursor and `.glb` export. The
+Phase 5 error overlay stays refused on the nDSM, with its reason. Select
+`synthetic_dsm.tif` and the DSM surface to see it.
+
+#### The API
+
+`python -m depthwizard.demo serve` starts a demo-grade FastAPI app on
+`127.0.0.1:8000`. There is no authentication, queue or database.
+
+| endpoint | what it does |
+| --- | --- |
+| `GET /health` | `{"status": "ok", "project": "DepthWizard", "phase": 8}` |
+| `POST /process` | upload one image (multipart field `file`; optional `require` = `auto` \| `absolute`); see below |
+| `POST /demo/synthetic` | runs the synthetic demo above and returns its report; `409` while one is already running |
+| `GET /outputs/{path}` | read-only access to `data/outputs`; `..`, absolute paths and backslashes are refused with `403` |
+
+Errors are JSON, `{"error": <kind>, "message": ...}`: `415` unsupported
+format, `422` corrupt image or missing metadata, `413` over 200 MB, `400` bad
+`require`, `500` processing failed (the stack trace goes to the server log
+only).
+
+#### What an uploaded image gets
+
+This is the honest limit of the current code. For an uploaded image (`POST
+/process` or `python -m depthwizard.demo process <image>`):
+
+- **Produced:** Phase 1 routing to ABSOLUTE or RELATIVE, with the reason; the
+  metadata summary (CRS, geotransform, GSD, sun angles, provenance); and, for
+  a 3-band (or more) image when a Phase 3 checkpoint is present, the Phase 3
+  **relative** height field on one centred square tile (at most 512 px),
+  **unitless**, with a viewer link (`?npy=...`).
+- **Not available, with the reason recorded:** shadow heights, calibrated AGL,
+  DSM, DTM, nDSM, mesh and validation. Phase 2 and the Phase 4a calibration
+  need supplied footprints, Phase 4b is synthetic by design, and an upload has
+  no reference heights.
+- A single-band image gets no relative field, because the model takes RGB.
+- `require=absolute` refuses an input that cannot support metric heights.
+
+So **an arbitrary ABSOLUTE GeoTIFF does not become a metric DSM.** An ABSOLUTE
+upload is reported as metric-*capable* (`metric_capable_input: true`), but
+its response `units` is `unitless` when the relative field was produced and
+`null` when nothing was; it is never `metres` on this path. Accuracy and
+uncertainty are `"not yet measured"` in every response.
+
+#### Tests
+
+- `tests/test_demo_api.py`: every endpoint; ABSOLUTE and RELATIVE uploads;
+  unsupported, empty and corrupt files; `require=absolute`; a clean failure
+  when a stage fails; path-escape refusal on `/outputs`; and the synthetic
+  demo running the existing chain.
+- `viewer/scripts/phase8-acceptance.mjs`: browser acceptance over the Chrome
+  DevTools Protocol against the real app. It checks the demo panel against
+  `demo_report.json`, the metres/ABSOLUTE labels, click-to-measure at each
+  building against the Phase 6 click test, the glTF/Draco export, the overlay
+  rules, the RELATIVE `.npy` staying unitless, and that there are no JS
+  exceptions, console errors or failed requests. It saves cropped screenshots
+  of the running application (never edited) to
+  `data/outputs/demo/screenshots/`.
+
+### Phase 9 — PLANNED
+
+Nothing below is implemented or started.
+
+- Scene stitching of per-tile outputs, using the valid spans Phase 1 already
+  records
+- A learned per-pixel uncertainty product
+- Batch processing of many scenes
+- Fine-tuning and validation on Cartosat imagery
+
+---
+
+## Limitations
+
+- **Building footprints are supplied, never detected.** Phase 2 and the Phase
+  4a calibration both need them.
+- **No metric DSM from an arbitrary upload** (see
+  [What an uploaded image gets](#what-an-uploaded-image-gets)).
+- **The end-to-end metric chain has only run on synthetic data**: flat roofs,
+  planar terrain, no noise, four axis-aligned buildings, a grayscale image.
+  The relative field in that chain is constructed from the fixture's truth,
+  not predicted.
+- **Real-data shadow calibration is mostly unidentifiable** on DFC2019 (Phase
+  4a). The classical shadow mask marks dark pavement as shadow, and tall
+  buildings meet tile edges.
+- **The one real-world validation is city-held-out with LiDAR-anchored
+  per-tile calibration**, JAX → OMA, on 10 % of OMA tiles. It is not a
+  zero-shot result, and no Jacksonville performance is claimed.
+- **Phase 3 output is relative and unitless**, per tile, and tiles are not
+  stitched.
+- **Real-world DTM, nDSM and georeferenced DSM accuracy: not yet measured.**
+- **Per-pixel uncertainty: not yet measured.** No uncertainty product exists,
+  and none is displayed.
+- **Viewer FPS: not yet measured.** Browser testing has been headless Chrome
+  (SwiftShader) only.
+- The DFC2019 GSD is unverified, so the DFC2019 sun elevation is not
+  determinable.
+- The API is demo-grade: single process, no authentication, uploads processed
+  synchronously.
 
 ---
 

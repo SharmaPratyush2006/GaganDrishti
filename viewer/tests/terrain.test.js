@@ -9,7 +9,7 @@ import { loadDemo } from '../src/data/load.js';
 import { readNpyRaster } from '../src/data/npy.js';
 import { valueAt } from '../src/data/raster.js';
 import { buildIndex } from '../server/dataRoute.js';
-import { diskFetch, expected, hasPhase6Outputs, OUTPUTS_DIR, readArrayBuffer, REPO_ROOT } from './helpers.js';
+import { diskFetch, expected, hasPhase6Outputs, OUTPUTS_DIR, PHASE6_REPORT, readArrayBuffer, REPO_ROOT } from './helpers.js';
 import { grid, rasterFrom } from './mesh3d.helpers.js';
 
 const ABS = { transform: expected['tiny_ndsm_cog.tif'].transform, crs: 'EPSG:32643', units: 'metres' };
@@ -63,7 +63,7 @@ const available = hasPhase6Outputs();
 
 describe.skipIf(!available)('real Phase 6 surfaces through one mesh pipeline', () => {
   it('meshes DSM, DTM and nDSM with the same code, heights straight from the raster', async () => {
-    const d = await loadDemo({}, diskFetch());
+    const d = await loadDemo({ phase6Report: PHASE6_REPORT }, diskFetch());
     const summary = {};
     for (const type of ['dsm', 'dtm', 'ndsm']) {
       const raster = d.rasters[type];

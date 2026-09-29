@@ -12,18 +12,18 @@ import { describe, expect, it } from 'vitest';
 import { loadDemo } from '../src/data/load.js';
 import { mapToPixelIndex, validStats, valueAt } from '../src/data/raster.js';
 import { buildIndex } from '../server/dataRoute.js';
-import { diskFetch, hasPhase6Outputs, OUTPUTS_DIR, REPO_ROOT } from './helpers.js';
+import { diskFetch, hasPhase6Outputs, OUTPUTS_DIR, PHASE6_REPORT, REPO_ROOT } from './helpers.js';
 
 const available = hasPhase6Outputs();
 
 describe.skipIf(!available)('real Phase 6 SYNTHETIC outputs', () => {
   const fetchImpl = diskFetch();
-  // The same index the loader reads decides which report is used.
-  const reportPath = available ? buildIndex(OUTPUTS_DIR).reports.find((p) => p.endsWith('phase6_report.json')) : null;
+  // The report is named explicitly (data/outputs may hold several Phase 6 runs); it must be in the loader's index.
+  const reportPath = available && buildIndex(OUTPUTS_DIR).reports.includes(PHASE6_REPORT) ? PHASE6_REPORT : null;
   const report = reportPath ? JSON.parse(fs.readFileSync(path.join(REPO_ROOT, reportPath), 'utf-8')) : null;
 
   it('loads the acceptance product with preserved size, nodata and georeferencing', async () => {
-    const d = await loadDemo({}, fetchImpl);
+    const d = await loadDemo({ phase6Report: PHASE6_REPORT }, fetchImpl);
     const name = report.acceptance.input;
     const grid = report.products[name].grid;
     expect(d.products.productName).toBe(name);
@@ -48,7 +48,7 @@ describe.skipIf(!available)('real Phase 6 SYNTHETIC outputs', () => {
 
   it('looks up nDSM (not DSM) at each building centroid and matches Phase 6 height_at()', async () => {
     for (const name of Object.keys(report.products)) {
-      const d = await loadDemo({ productName: name }, fetchImpl);
+      const d = await loadDemo({ phase6Report: PHASE6_REPORT, productName: name }, fetchImpl);
       for (const click of report.products[name].clicks) {
         const px = mapToPixelIndex(d.rasters.ndsm, click.easting_m, click.northing_m);
         expect(px).not.toBeNull();
@@ -63,7 +63,7 @@ describe.skipIf(!available)('real Phase 6 SYNTHETIC outputs', () => {
 
   it('links Phase 5 layers only where Phase 5 validated that exact source DSM', async () => {
     for (const name of Object.keys(report.products)) {
-      const d = await loadDemo({ productName: name }, fetchImpl);
+      const d = await loadDemo({ phase6Report: PHASE6_REPORT, productName: name }, fetchImpl);
       const has = Boolean(d.products.errorMap);
       expect(Boolean(d.rasters.error)).toBe(has);
       if (has) {
