@@ -1,0 +1,20 @@
+# Render blueprint: the Phase 8 SYNTHETIC demo as one web service (API + built viewer).
+# data/outputs is git-ignored, so the build regenerates the deterministic demo tree
+# (data/outputs/demo) with the same command the README documents.
+services:
+  - type: web
+    name: depthwizard-demo
+    runtime: python
+    plan: free
+    buildCommand: >-
+      pip install -e ".[demo]" &&
+      npm ci --prefix viewer --include=dev &&
+      npm run build --prefix viewer &&
+      python -m depthwizard.demo synthetic
+    startCommand: python -m depthwizard.demo.production
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.10.10"
+      - key: NODE_VERSION
+        value: "22"

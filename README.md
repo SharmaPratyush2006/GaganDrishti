@@ -2183,6 +2183,21 @@ uncertainty are `"not yet measured"` in every response.
   exceptions, console errors or failed requests. It saves cropped screenshots
   of the running application (never edited) to
   `data/outputs/demo/screenshots/`.
+- `tests/test_production_serving.py`: the deployment app below — `index.html`
+  at `/`, static assets, `/health`, `/outputs/demo/reports/demo_report.json`,
+  the viewer's data route, and path-escape refusal on every file route.
+
+#### Deployment (one web service)
+
+`python -m depthwizard.demo.production` serves the demo API and the built
+viewer (`viewer/dist`) on one port: `0.0.0.0:$PORT`, default 8000. It wraps
+the API unchanged and adds the two read-only routes the Vite dev server
+otherwise provides (`/__data_index`, `/data/outputs/*`); `npm run dev` is
+unaffected. `render.yaml` is the Render blueprint. Its build installs
+`.[demo]` (no torch: without the git-ignored Phase 3 checkpoint, `/process`
+reports the relative field as not available), builds the viewer, and
+regenerates `data/outputs/demo` with `python -m depthwizard.demo synthetic`.
+Render's disk is ephemeral, so uploads and demo re-runs are lost on restart.
 
 ### Phase 9 — PLANNED
 
