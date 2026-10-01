@@ -195,9 +195,9 @@ try {
 
   // 1. viewer + Phase 8 demo
   await goto(`${args.base}/`);
-  check('viewer loads', (await text('h1')) === 'DepthWizard 3D Viewer');
-  check('"Load Phase 8 Demo" present', await waitFor("[...document.querySelectorAll('button')].some((b) => b.textContent === 'Load Phase 8 Demo')", 10000));
-  await clickButton('Load Phase 8 Demo');
+  check('viewer loads', (await text('h1')) === 'DEPTHWIZARD');
+  check('"▶ Load 3D Building Demo" present', await waitFor("[...document.querySelectorAll('button')].some((b) => b.textContent === '▶ Load 3D Building Demo')", 10000));
+  await clickButton('▶ Load 3D Building Demo');
   check('Phase 8 demo loads', await waitFor("!!document.querySelector('[data-testid=demo-panel]') && !!window.__depthwizard?.live?.terrain", 60000));
   await waitFor("[...document.querySelectorAll('.demo-figure')].every((i) => i.complete && i.naturalWidth > 0)", 10000);
 
@@ -241,7 +241,7 @@ try {
   check('tallest building measured last (screenshot shows it)', last?.building === 'slab_c', last?.building);
 
   // 3. navigation + linked cursor
-  await clickButton('First person');
+  await clickButton('First Person');
   check('first-person mode', await waitFor("/First/i.test(document.querySelector('[data-testid=camera-status]').innerText)", 5000));
   await clickButton('Orbit');
   check('orbit mode', await waitFor("/Orbit/i.test(document.querySelector('[data-testid=camera-status]').innerText)", 5000));
@@ -285,9 +285,9 @@ try {
   await goto(`${args.base}/?phase6Report=data/outputs/phase6/synthetic/phase6_report.json`);
   const p7 = await waitFor("!!window.__depthwizard?.live?.terrain && /phase6\\/synthetic\\/phase6_report/.test(document.body.innerText)", 60000);
   check('Phase 7 data via ?phase6Report (skipped if absent)', p7 || !fs.existsSync(path.join(REPO, 'data/outputs/phase6/synthetic/phase6_report.json')));
-  await goto(`${args.base}/`);
+  await goto(`${args.base}/?demo=0`); // the bare root URL auto-loads the demo, which chooses a report
   if (await waitFor("!!document.querySelector('[data-testid=phase6-report]')", 5000)) {
-    await clickButton('Load Phase 6 demo');
+    await clickButton('Load Ground Separation');
     check('several Phase 6 reports + no choice -> explicit refusal', await waitFor("/several Phase 6 reports found; choose one/.test(document.querySelector('.error')?.innerText ?? '')", 10000));
   }
 

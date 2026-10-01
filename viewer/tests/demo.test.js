@@ -7,7 +7,7 @@ import path from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
-import { chooseNpy, isDemoManifest, loadPhase8Demo, readDemoManifest } from '../src/data/demo.js';
+import { chooseNpy, DEFAULT_PHASE3_NPY, isDemoManifest, loadPhase8Demo, readDemoManifest, startupLoad } from '../src/data/demo.js';
 import { fetchNpy, loadDemo } from '../src/data/load.js';
 import { formatValue } from '../src/data/metadata.js';
 import { resolveDemoProducts } from '../src/data/products.js';
@@ -41,6 +41,15 @@ describe('Phase 8 selection rules (no index-order guessing)', () => {
     expect(() => chooseNpy(two)).toThrow(/several .npy relative-height outputs found; choose one/);
     expect(() => chooseNpy(two, 'data/outputs/c.npy')).toThrow(/not found under data\/outputs/);
     expect(() => chooseNpy({ npy: [] })).toThrow(/no .npy/);
+  });
+
+  it('picks the start-up load from the URL: the root URL loads the Phase 8 demo, explicit queries win', () => {
+    const at = (q) => startupLoad(new URLSearchParams(q));
+    expect(at('')).toBe('demo');
+    expect(at('?demo=1')).toBe('demo');
+    expect(at('?phase6Report=data/outputs/x/phase6_report.json&product=x.tif')).toBe('phase6');
+    expect(at('?npy=data/outputs/a.npy')).toBe('npy');
+    expect(at('?product=x.tif')).toBeNull();
   });
 
   it('refuses several Phase 6 reports without a choice, and loads the chosen one', () => {
@@ -114,6 +123,14 @@ describe.skipIf(!hasDemo)('real Phase 8 demo outputs', () => {
     await expect(loadDemo({}, fetchImpl)).rejects.toThrow(/several Phase 6 reports found; choose one/);
     const p7 = await loadDemo({ phase6Report: PHASE6_REPORT }, fetchImpl);
     expect(p7.products.phase6Report).toBe(PHASE6_REPORT);
+  });
+});
+
+describe.skipIf(!index.npy.includes(DEFAULT_PHASE3_NPY))('the default Phase 3 relative .npy', () => {
+  it('is in the index alongside the others and loads as RELATIVE', async () => {
+    expect(index.npy.length).toBeGreaterThan(1);
+    const r = await fetchNpy(chooseNpy(index, DEFAULT_PHASE3_NPY), diskFetch());
+    expect(r.mode).toBe('RELATIVE');
   });
 });
 

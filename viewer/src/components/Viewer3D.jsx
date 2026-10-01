@@ -15,6 +15,8 @@ import MeasurementPanel from './MeasurementPanel.jsx';
 import OverlayControls from './OverlayControls.jsx';
 
 const MODE_LABEL = { orbit: 'Orbit', firstPerson: 'First Person' };
+// Viewport corner label for the displayed surface.
+const BADGE = { ndsm: 'nDSM', dsm: 'DSM', dtm: 'DTM', relative_height: 'RELATIVE HEIGHT' };
 const HINTS = {
   orbit: 'left-drag rotate · right-drag pan · wheel zoom',
   firstPerson: 'W/S forward/back · A/D strafe · Q/E down/up · Shift faster · drag to look',
@@ -210,34 +212,58 @@ export default function Viewer3D({ raster, sourceImage, measureRaster, showTextu
 
   const measureLabel = measureRaster ? `${measureRaster.productType} — ${PRODUCT_MEANINGS[measureRaster.productType]}` : 'nothing (no nDSM or relative raster loaded)';
 
+  const badge = raster ? (BADGE[raster.productType] ?? raster.productType) : null;
+
   return (
     <div className="viewer3d">
-      <canvas ref={canvasRef} className="viewer-canvas" data-testid="terrain-canvas" tabIndex={0} />
-      <div className="viewer-toolbar">
-        <span className="camera-status" data-testid="camera-status">Camera: {MODE_LABEL[navMode]}</span>
-        <button className={navMode === 'orbit' ? 'on' : ''} onClick={() => switchMode('orbit')}>Orbit</button>
-        <button className={navMode === 'firstPerson' ? 'on' : ''} onClick={() => switchMode('firstPerson')}>First person</button>
-        <button onClick={resetView}>Reset view</button>
-        <button className={measuring ? 'on' : ''} onClick={toggleMeasure} disabled={!measureRaster} data-testid="measure-toggle">
-          {measuring ? 'Measure: ON (click to exit)' : 'Measure'}
-        </button>
-        <span className="muted">{HINTS[navMode]}{measuring ? ' · click the terrain to measure' : ''}</span>
-        <button className={linkedOpen ? 'on' : ''} onClick={() => setLinkedOpen(!linkedOpen)} data-testid="linked-toggle">
-          {linkedOpen ? '2D linked cursor: ON' : '2D linked cursor'}
-        </button>
-        {switchMs !== null && <span className="muted">last mode switch {switchMs.toFixed(1)} ms</span>}
+      <div className="viewport">
+        <canvas ref={canvasRef} className="viewer-canvas" data-testid="terrain-canvas" tabIndex={0} />
+        {badge && (
+          <div className="viewport-badge" aria-hidden="true">
+            <span className="badge-title">3D SURFACE</span>
+            <span>{badge} · {raster.mode === 'RELATIVE' ? 'RELATIVE' : 'RECONSTRUCTED'}</span>
+          </div>
+        )}
+        {measuring && <div className="viewport-mode" aria-hidden="true">MEASURE · click the terrain</div>}
       </div>
-      <MeasurementPanel active={measuring} result={measurement} measureLabel={measureLabel} />
-      <ExportPanel raster={error ? null : raster} sourceImage={sourceImage} />
+      <div className="subsection">
+        <h3 className="section-label">3D Controls</h3>
+        <div className="viewer-toolbar">
+          <span className="camera-status" data-testid="camera-status">Camera: {MODE_LABEL[navMode]}</span>
+          <div className="btn-group" role="group" aria-label="Camera mode">
+            <button className={navMode === 'orbit' ? 'on' : ''} aria-pressed={navMode === 'orbit'} onClick={() => switchMode('orbit')}>Orbit</button>
+            <button className={navMode === 'firstPerson' ? 'on' : ''} aria-pressed={navMode === 'firstPerson'} onClick={() => switchMode('firstPerson')}>First Person</button>
+          </div>
+          <button onClick={resetView}>Reset View</button>
+          <button className={measuring ? 'on' : ''} aria-pressed={measuring} onClick={toggleMeasure} disabled={!measureRaster} data-testid="measure-toggle">
+            {measuring ? 'Measure: ON (click to exit)' : 'Measure'}
+          </button>
+          <button className={linkedOpen ? 'on' : ''} aria-pressed={linkedOpen} onClick={() => setLinkedOpen(!linkedOpen)} data-testid="linked-toggle">
+            {linkedOpen ? '2D Linked Cursor: ON' : '2D Linked Cursor'}
+          </button>
+        </div>
+        <div className="muted hint">
+          {HINTS[navMode]}{measuring ? ' · click the terrain to measure' : ''}
+          {switchMs !== null && <> · last mode switch {switchMs.toFixed(1)} ms</>}
+        </div>
+        <MeasurementPanel active={measuring} result={measurement} measureLabel={measureLabel} />
+      </div>
       {eligibility && (
-        <OverlayControls eligibility={eligibility} active={overlayKind} onToggle={toggleOverlay} opacity={opacity}
-          onOpacity={setOpacity} overlay={overlay} tintByLevel={tintByLevel} lastMs={overlayMs} />
+        <div className="subsection">
+          <h3 className="section-label">Overlays</h3>
+          <OverlayControls eligibility={eligibility} active={overlayKind} onToggle={toggleOverlay} opacity={opacity}
+            onOpacity={setOpacity} overlay={overlay} tintByLevel={tintByLevel} lastMs={overlayMs} />
+        </div>
       )}
       {linkedOpen && raster && (
         <LinkedCursorPanel surfaceRaster={raster} sourceImage={sourceImage} overlay={overlay}
           overlayRaster={overlay ? diagnostics[overlay.kind] : null} opacity={opacity} location={location}
           onPick={pickPixel} onClear={clearCursor} onLinkState={setLinkAligned} />
       )}
+      <div className="subsection">
+        <h3 className="section-label">Export</h3>
+        <ExportPanel raster={error ? null : raster} sourceImage={sourceImage} />
+      </div>
       {error && <p className="error">{error}</p>}
     </div>
   );

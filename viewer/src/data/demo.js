@@ -14,6 +14,9 @@ import { reportPathToUrl } from './paths.js';
 /** @param {string} p  repo-relative report path */
 export const isDemoManifest = (p) => /(?:^|\/)demo_report\.json$/.test(p);
 
+/** The Phase 3 relative .npy the "Load a Phase 3 relative .npy" button uses when none is chosen. */
+export const DEFAULT_PHASE3_NPY = 'data/outputs/phase3/verification/JAX_004_006_r256_c256_relative_height.npy';
+
 /**
  * The .npy to load: the chosen one, or the only one in the index.
  * @param {{npy:string[]}} index
@@ -25,6 +28,19 @@ export function chooseNpy(index, chosen) {
   if (!path) throw new Error(`several .npy relative-height outputs found; choose one: ${index.npy.join(', ')}`);
   if (!index.npy.includes(path)) throw new Error(`.npy not found under data/outputs: ${path}`);
   return path;
+}
+
+/**
+ * What to load at start-up, from the URL: ?demo=1 or the bare root URL -> the Phase 8 demo;
+ * otherwise an explicit ?phase6Report= or ?npy=; any other query loads nothing.
+ * @param {URLSearchParams} params
+ * @returns {'demo'|'phase6'|'npy'|null}
+ */
+export function startupLoad(params) {
+  if (params.get('demo') === '1') return 'demo';
+  if (params.get('phase6Report')) return 'phase6';
+  if (params.get('npy')) return 'npy';
+  return params.toString() === '' ? 'demo' : null;
 }
 
 /**
